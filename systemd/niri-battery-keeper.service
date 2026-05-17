@@ -1,0 +1,21 @@
+[Unit]
+Description=niri-battery-keeper daemon
+Documentation=https://github.com/petrovichest/niri-battery-keeper
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/niri-battery-keeper daemon
+# Stay outside app.slice so the daemon does not throttle itself.
+Slice=session.slice
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+# Allow killing via SIGTERM only; the daemon resets units on shutdown.
+KillMode=mixed
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target

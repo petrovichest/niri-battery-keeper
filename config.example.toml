@@ -1,0 +1,79 @@
+# ~/.config/niri-battery-keeper/config.toml
+# Auto-generated on first run; edit freely. The daemon picks up changes on SIGHUP
+# (`systemctl --user kill -s SIGHUP niri-battery-keeper.service`) or when the GUI's
+# Apply button is clicked.
+
+# Currently active mode. Switch via the GUI's mode bar, CLI
+# (`niri-battery-keeper mode <name>`), or by editing this and reloading.
+active_mode = "off"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Modes
+#
+# Each preset declares what to do with an UNFOCUSED app via the `action` field:
+#
+#   action = "off"        — leave it alone, no restriction
+#   action = "throttle"   — cap CPU% and weights (needs cpu_quota / cpu_weight / io_weight)
+#   action = "pause"      — freeze the cgroup; app keeps memory but uses 0% CPU
+#                           until you refocus it (cgroup-v2 freezer)
+#
+# For "throttle":
+#   cpu_quota   — fraction of one CPU core. "100%" = a whole core, "5%" = ~2× the
+#                 background-tab budget. Empty string ⇒ no cap.
+#   cpu_weight  — relative scheduling weight (1..=10000). Systemd default = 100.
+#   io_weight   — relative I/O weight (1..=10000). Systemd default = 100.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[modes.off]
+action = "none"
+
+[modes.minimal]
+action = "throttle"
+cpu_quota = "5%"
+cpu_weight = 5
+io_weight = 5
+
+[modes.pause]
+action = "pause"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Policy
+# ──────────────────────────────────────────────────────────────────────────────
+
+[policy]
+# When true, every app launched into its own systemd app-*.scope is managed
+# (subject to exclusions below). When false, only apps explicitly listed in
+# [apps.<id>] are managed.
+manage_all = true
+
+# Always-excluded app_ids — never throttle these, regardless of mode.
+hardcoded_exclude = ["mpv", "io.mpv.Mpv", "vlc", "org.videolan.VLC", "obs", "com.obsproject.Studio", "Spotify"]
+
+# Wait this long after a window loses focus before throttling it. Prevents
+# thrashing when you Alt-Tab through several windows.
+unfocus_grace_ms = 1500
+
+# When a unit hosts several windows (e.g. Firefox launched from Telegram's
+# scope), throttle the unit only when ALL its windows are unfocused.
+skip_shared_scopes = true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-app overrides. The key is the app_id reported by Niri.
+#
+#   override = "use_mode"            — fall back to the active mode (default).
+#   override = "profile"             — pin to a named mode regardless of `active_mode`.
+#   override = "exclude"             — never throttle this app.
+#
+# Example:
+# [apps.firefox]
+# override = "use_mode"
+#
+# [apps."code-oss"]
+# override = "profile"
+# profile  = "minimal"
+#
+# [apps."org.telegram.desktop"]
+# override = "exclude"
+# ──────────────────────────────────────────────────────────────────────────────
+
+[apps]
