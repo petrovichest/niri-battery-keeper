@@ -29,6 +29,11 @@ pub struct DaemonState {
     /// Apps grouped with all their discovered scopes.
     pub apps: Vec<AppGroupInfo>,
     pub throttled_units: Vec<String>,
+    /// Every leaf cgroup unit (scope/service) under the current user's
+    /// `user@<uid>.service` slice, categorized by what the daemon is doing
+    /// with it. Empty when the cgroup tree can't be read.
+    #[serde(default)]
+    pub system_units: Vec<SystemUnitInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +63,53 @@ pub struct ScopeInfo {
     pub unit: String,
     pub pid_count: usize,
     pub throttled: bool,
+    /// Real cgroup-v2 limits as currently set in the kernel (not the
+    /// configured profile). `None` when the scope wasn't found during scan.
+    #[serde(default)]
+    pub limits: Option<CgroupLimits>,
+    /// True when this scope is also assigned to another app_id — i.e. two
+    /// Niri-tracked apps share the same systemd scope (xdg-open case).
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SystemUnitCategory {
+    /// Already shown under a Niri app in `apps[]`. GUI dedups by skipping.
+    Managed { app_id: String },
+    /// No Niri window, no protected pid — a background app/helper.
+    Orphan,
+    /// Contains a protected process (compositor, audio, portal…). Daemon
+    /// will refuse to throttle it.
+    Protected { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub pid: i32,
+    pub comm: String,
+    pub cmdline: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CgroupLimits {
+    /// e.g. `"unset"`, `"50%"`, `"5%"`.
+    pub cpu_max: String,
+    pub cpu_weight: Option<u32>,
+    pub io_weight: Option<u32>,
+    pub frozen: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemUnitInfo {
+    pub unit: String,
+    pub category: SystemUnitCategory,
+    pub pid_count: usize,
+    /// Up to 16 sampled processes from this unit (avoids ballooning the IPC
+    /// payload for units with hundreds of pids).
+    pub processes: Vec<ProcessInfo>,
+    pub limits: CgroupLimits,
 }
 
 pub fn socket_path() -> PathBuf {

@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 
 use crate::config::{AppRule, Config, CpuQuota, Profile};
-use crate::proto::{client, DaemonState, Request, Response};
+use crate::proto::{
+    client, CgroupLimits, DaemonState, Request, Response, SystemUnitCategory, SystemUnitInfo,
+};
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = eframe::NativeOptions {
@@ -110,6 +112,8 @@ impl App {
 fn sync_runtime_into_draft(draft: &mut DaemonState, server: &DaemonState) {
     draft.windows = server.windows.clone();
     draft.throttled_units = server.throttled_units.clone();
+    draft.apps = server.apps.clone();
+    draft.system_units = server.system_units.clone();
 }
 
 impl eframe::App for App {
@@ -271,6 +275,8 @@ fn draw_app_list(ui: &mut egui::Ui, draft: &mut DaemonState) {
             ("waiting", Color32::GRAY)
         };
 
+        let any_shared = app.scopes.iter().any(|s| s.shared);
+
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&app_id).strong().size(15.0));
@@ -279,6 +285,17 @@ fn draw_app_list(ui: &mut egui::Ui, draft: &mut DaemonState) {
                         .color(badge.1)
                         .small()
                 );
+                if any_shared {
+                    ui.label(
+                        RichText::new("[shared]")
+                            .color(Color32::from_rgb(220, 160, 70))
+                            .small(),
+                    )
+                    .on_hover_text(
+                        "One or more scopes are also owned by another Niri app — \
+                         throttling this app may affect the other (and vice versa).",
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let scope_count = app.scopes.len();
                     let total_pids: usize = app.scopes.iter().map(|s| s.pid_count).sum();
@@ -348,18 +365,168 @@ fn draw_app_list(ui: &mut egui::Ui, draft: &mut DaemonState) {
                             };
                             ui.horizontal(|ui| {
                                 ui.colored_label(color, state_text);
+                                let shared_tag = if s.shared { "  [shared]" } else { "" };
                                 ui.label(
-                                    RichText::new(format!("{}  ({} pid)", s.unit, s.pid_count))
-                                        .weak()
-                                        .small()
+                                    RichText::new(format!(
+                                        "{}  ({} pid){shared_tag}",
+                                        s.unit, s.pid_count
+                                    ))
+                                    .weak()
+                                    .small(),
                                 );
                             });
+                            if let Some(limits) = &s.limits {
+                                ui.label(
+                                    RichText::new(format!("      {}", format_limits(limits)))
+                                        .weak()
+                                        .small(),
+                                );
+                            }
                         }
                     }
                 });
         });
         ui.add_space(4.0);
     }
+
+    draw_system_sections(ui, &draft.system_units);
+}
+
+/// Render "Apps without windows" and "Desktop environment (protected)"
+/// sections below the Niri-tracked app list.
+fn draw_system_sections(ui: &mut egui::Ui, units: &[SystemUnitInfo]) {
+    let mut orphans: Vec<&SystemUnitInfo> = Vec::new();
+    let mut protected: Vec<&SystemUnitInfo> = Vec::new();
+    for u in units {
+        match &u.category {
+            SystemUnitCategory::Managed { .. } => {}
+            SystemUnitCategory::Orphan => orphans.push(u),
+            SystemUnitCategory::Protected { .. } => protected.push(u),
+        }
+    }
+
+    if !orphans.is_empty() {
+        ui.add_space(6.0);
+        ui.separator();
+        ui.label(
+            RichText::new(format!("— Apps without windows ({}) —", orphans.len()))
+                .weak()
+                .strong(),
+        );
+        for u in orphans {
+            draw_system_unit_card(ui, u, "orphan", Color32::from_rgb(150, 150, 150));
+        }
+    }
+
+    if !protected.is_empty() {
+        ui.add_space(6.0);
+        ui.separator();
+        ui.label(
+            RichText::new(format!(
+                "— Desktop environment (protected, {}) —",
+                protected.len()
+            ))
+            .weak()
+            .strong(),
+        );
+        for u in protected {
+            let label = match &u.category {
+                SystemUnitCategory::Protected { reason } => format!("protected: {reason}"),
+                _ => "protected".to_string(),
+            };
+            draw_system_unit_card(ui, u, &label, Color32::from_rgb(120, 160, 220));
+        }
+    }
+}
+
+fn draw_system_unit_card(
+    ui: &mut egui::Ui,
+    u: &SystemUnitInfo,
+    badge_label: &str,
+    badge_color: Color32,
+) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&u.unit).strong().size(13.0));
+            ui.label(
+                RichText::new(format!("[{badge_label}]"))
+                    .color(badge_color)
+                    .small(),
+            );
+            if u.limits.frozen {
+                ui.label(
+                    RichText::new("[frozen]")
+                        .color(Color32::from_rgb(100, 180, 220))
+                        .small(),
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{} pid", u.pid_count))
+                        .weak()
+                        .small(),
+                );
+            });
+        });
+
+        egui::CollapsingHeader::new(RichText::new("Details").weak().small())
+            .id_salt(format!("sys-details-{}", u.unit))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!("cgroup: {}", format_limits(&u.limits)))
+                        .weak()
+                        .small(),
+                );
+                ui.add_space(2.0);
+                ui.label(RichText::new("Processes:").weak().small());
+                if u.processes.is_empty() {
+                    ui.label(RichText::new("  (none)").weak().small());
+                } else {
+                    for p in &u.processes {
+                        ui.label(
+                            RichText::new(format!(
+                                "  {} · {} · {}",
+                                p.pid,
+                                p.comm,
+                                if p.cmdline.is_empty() { "—" } else { &p.cmdline }
+                            ))
+                            .weak()
+                            .small(),
+                        );
+                    }
+                    if u.pid_count > u.processes.len() {
+                        ui.label(
+                            RichText::new(format!(
+                                "  … and {} more",
+                                u.pid_count - u.processes.len()
+                            ))
+                            .weak()
+                            .small(),
+                        );
+                    }
+                }
+            });
+    });
+    ui.add_space(4.0);
+}
+
+fn format_limits(l: &CgroupLimits) -> String {
+    let cpu_w = l
+        .cpu_weight
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".into());
+    let io_w = l
+        .io_weight
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".into());
+    format!(
+        "cpu.max={}  cpu.weight={}  io.weight={}{}",
+        l.cpu_max,
+        cpu_w,
+        io_w,
+        if l.frozen { "  [FROZEN]" } else { "" }
+    )
 }
 
 fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config) {

@@ -32,14 +32,70 @@ const PROTECTED_COMMS: &[&str] = &[
 ];
 
 pub fn is_protected_pid(pid: i32) -> bool {
-    let comm = match fs::read_to_string(format!("/proc/{pid}/comm")) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return false,
-    };
+    protected_reason(pid).is_some()
+}
+
+/// If `pid` is a protected process, return its `/proc/<pid>/comm` value.
+/// Lets callers (GUI) explain *why* a scope was skipped.
+pub fn protected_reason(pid: i32) -> Option<String> {
+    let comm = read_comm(pid);
     if comm.is_empty() {
-        return false;
+        return None;
     }
-    PROTECTED_COMMS.iter().any(|p| *p == comm)
+    if PROTECTED_COMMS.iter().any(|p| *p == comm) {
+        Some(comm)
+    } else {
+        None
+    }
+}
+
+/// Read `/proc/<pid>/comm`. Returns "" on error or for dead pids.
+pub fn read_comm(pid: i32) -> String {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Read `/proc/<pid>/cmdline`, replacing NUL separators with spaces.
+/// Truncated to `max_len` bytes (with a "…" suffix when truncated).
+pub fn read_cmdline(pid: i32, max_len: usize) -> String {
+    let bytes = match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(b) => b,
+        Err(_) => return String::new(),
+    };
+    // Trim trailing NULs, replace internal NULs with spaces.
+    let trimmed: Vec<u8> = bytes
+        .into_iter()
+        .rev()
+        .skip_while(|b| *b == 0)
+        .collect::<Vec<u8>>()
+        .into_iter()
+        .rev()
+        .map(|b| if b == 0 { b' ' } else { b })
+        .collect();
+    let s = String::from_utf8_lossy(&trimmed).into_owned();
+    if s.len() > max_len {
+        let mut cut = max_len.saturating_sub(1);
+        while !s.is_char_boundary(cut) && cut > 0 {
+            cut -= 1;
+        }
+        format!("{}…", &s[..cut])
+    } else {
+        s
+    }
+}
+
+/// Read every PID listed in `/sys/fs/cgroup<cg_rel_path>/cgroup.procs`.
+/// Returns an empty vec on read errors (cgroup gone / no permission).
+pub fn read_cgroup_procs(cg_rel_path: &str) -> Vec<i32> {
+    let fs_path = format!("/sys/fs/cgroup{cg_rel_path}/cgroup.procs");
+    let text = match fs::read_to_string(&fs_path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    text.split_whitespace()
+        .filter_map(|s| s.parse::<i32>().ok())
+        .collect()
 }
 
 /// Resolve a PID to its leaf systemd unit name (e.g. `app-niri-alacritty-307709.scope`).
@@ -66,22 +122,12 @@ pub fn resolve_unit(pid: i32) -> Option<String> {
     Some(scope)
 }
 
-/// Read `/sys/fs/cgroup/<cg_rel_path>/cgroup.procs` and check if any PID in
-/// that scope is protected. If any is, the entire scope is off-limits.
+/// Check if any PID inside `/sys/fs/cgroup<cg_rel_path>/cgroup.procs` is
+/// protected. If any is, the entire scope is off-limits.
 fn scope_contains_protected_pid(cg_rel_path: &str) -> bool {
-    let fs_path = format!("/sys/fs/cgroup{cg_rel_path}/cgroup.procs");
-    let text = match fs::read_to_string(&fs_path) {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    for pid_str in text.split_whitespace() {
-        if let Ok(pid) = pid_str.parse::<i32>() {
-            if is_protected_pid(pid) {
-                return true;
-            }
-        }
-    }
-    false
+    read_cgroup_procs(cg_rel_path)
+        .into_iter()
+        .any(is_protected_pid)
 }
 
 fn parse_cgroup_to_unit_and_path(cgroup_text: &str) -> Option<(String, String)> {

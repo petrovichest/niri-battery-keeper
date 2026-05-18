@@ -3,6 +3,7 @@ pub mod cgroup;
 pub mod throttle;
 pub mod ipc;
 pub mod proctree;
+pub mod system_scan;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::proto::{self, AppGroupInfo, DaemonState, Request, Response, ScopeInfo, WindowInfo};
+use crate::proto::{
+    self, AppGroupInfo, CgroupLimits, DaemonState, ProcessInfo, Request, Response, ScopeInfo,
+    SystemUnitCategory, SystemUnitInfo, WindowInfo,
+};
 use cgroup::UnitCache;
 use throttle::Throttler;
 
@@ -250,6 +254,24 @@ impl State {
         let throttled = self.throttler.throttled_units();
         let throttled_set: HashSet<&String> = throttled.iter().collect();
 
+        // Scan once, build lookups for the rest of this snapshot.
+        let scanned = system_scan::scan();
+        let limits_by_unit: HashMap<&str, &system_scan::UnitLimits> = scanned
+            .iter()
+            .map(|u| (u.unit.as_str(), &u.limits))
+            .collect();
+
+        // unit name → list of app_ids that claim it (for [shared] detection)
+        let mut owners_by_unit: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (app_id, app) in &self.apps {
+            for unit in app.scopes.keys() {
+                owners_by_unit
+                    .entry(unit.as_str())
+                    .or_default()
+                    .push(app_id.as_str());
+            }
+        }
+
         let mut windows: Vec<WindowInfo> = self.windows.values().map(|w| {
             let excluded = config.resolve_profile(&w.app_id).is_none();
             WindowInfo {
@@ -271,10 +293,16 @@ impl State {
         let mut apps: Vec<AppGroupInfo> = self.apps.iter().map(|(app_id, app)| {
             let profile = config.resolve_profile(app_id);
             let mut scopes: Vec<ScopeInfo> = app.scopes.iter().map(|(name, count)| {
+                let shared = owners_by_unit
+                    .get(name.as_str())
+                    .map(|v| v.len() > 1)
+                    .unwrap_or(false);
                 ScopeInfo {
                     unit: name.clone(),
                     pid_count: *count,
                     throttled: throttled_set.contains(name),
+                    limits: limits_by_unit.get(name.as_str()).map(|l| to_proto_limits(l)),
+                    shared,
                 }
             }).collect();
             scopes.sort_by(|a, b| a.unit.cmp(&b.unit));
@@ -289,12 +317,26 @@ impl State {
         }).collect();
         apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
 
+        // Categorize every scanned leaf unit: managed (skip in GUI section),
+        // protected (system-critical), or orphan (background app w/o window).
+        let managed_by_unit: HashMap<&str, &str> = owners_by_unit
+            .iter()
+            .map(|(unit, owners)| (*unit, *owners.first().unwrap_or(&"")))
+            .collect();
+
+        let mut system_units: Vec<SystemUnitInfo> = scanned
+            .iter()
+            .map(|u| classify_unit(u, &managed_by_unit))
+            .collect();
+        system_units.sort_by(|a, b| a.unit.cmp(&b.unit));
+
         DaemonState {
             active_mode: config.active_mode.clone(),
             config: config.clone(),
             windows,
             apps,
             throttled_units: throttled,
+            system_units,
         }
     }
 }
@@ -464,4 +506,51 @@ fn handle_ipc(state: &mut State, config: &mut Config, m: ipc::IpcMessage) {
         }
     };
     let _ = m.reply.send(resp);
+}
+
+fn to_proto_limits(l: &system_scan::UnitLimits) -> CgroupLimits {
+    CgroupLimits {
+        cpu_max: l.cpu_max.clone(),
+        cpu_weight: l.cpu_weight,
+        io_weight: l.io_weight,
+        frozen: l.frozen,
+    }
+}
+
+/// Decide which bucket a scanned unit falls into and resolve its process
+/// list. Caps process detail at 16 pids to keep IPC payloads small.
+fn classify_unit(
+    u: &system_scan::ScannedUnit,
+    managed_by_unit: &HashMap<&str, &str>,
+) -> SystemUnitInfo {
+    // Protected wins over managed: if any pid inside is protected, the
+    // daemon won't touch the scope even if Niri tracks an app there.
+    let protected_reason = u.pids.iter().find_map(|p| cgroup::protected_reason(*p));
+
+    let category = if let Some(reason) = protected_reason {
+        SystemUnitCategory::Protected { reason }
+    } else if let Some(&app_id) = managed_by_unit.get(u.unit.as_str()) {
+        SystemUnitCategory::Managed { app_id: app_id.to_string() }
+    } else {
+        SystemUnitCategory::Orphan
+    };
+
+    let processes: Vec<ProcessInfo> = u
+        .pids
+        .iter()
+        .take(16)
+        .map(|pid| ProcessInfo {
+            pid: *pid,
+            comm: cgroup::read_comm(*pid),
+            cmdline: cgroup::read_cmdline(*pid, 200),
+        })
+        .collect();
+
+    SystemUnitInfo {
+        unit: u.unit.clone(),
+        category,
+        pid_count: u.pids.len(),
+        processes,
+        limits: to_proto_limits(&u.limits),
+    }
 }
