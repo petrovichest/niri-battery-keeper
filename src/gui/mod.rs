@@ -124,6 +124,44 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("mode_bar").show(ctx, |ui| {
             ui.add_space(6.0);
+
+            // Kill switch — committed immediately, not via the Apply button,
+            // because the whole point is "I want it off right now".
+            let disabled_now = self.draft.as_ref()
+                .map(|d| d.config.disabled).unwrap_or(false);
+            ui.horizontal(|ui| {
+                let (label, fill, fg) = if disabled_now {
+                    ("● Kill switch: ON  (click to re-enable)",
+                     Color32::from_rgb(180, 60, 60), Color32::WHITE)
+                } else {
+                    ("○ Kill switch: off  (click to disable everything)",
+                     Color32::from_rgb(50, 70, 50), Color32::from_rgb(220, 220, 220))
+                };
+                let btn = egui::Button::new(RichText::new(label).color(fg).strong())
+                    .fill(fill)
+                    .min_size(egui::vec2(ui.available_width(), 26.0));
+                if ui.add(btn).clicked() {
+                    let new_val = !disabled_now;
+                    // Optimistically update draft + server copies so the UI
+                    // doesn't bounce until the next poll lands.
+                    if let Some(d) = &mut self.draft { d.config.disabled = new_val; }
+                    if let Some(s) = &mut self.server { s.config.disabled = new_val; }
+                    match client::send(&Request::SetDisabled { disabled: new_val }) {
+                        Ok(Response::Ok | Response::State(_)) => {
+                            self.error = None;
+                            self.last_poll = Instant::now() - Duration::from_secs(10);
+                        }
+                        Ok(Response::Error { message }) => {
+                            self.error = Some(format!("kill switch: {message}"));
+                        }
+                        Err(e) => {
+                            self.error = Some(format!("kill switch: {e}"));
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
+
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Mode:").strong());
                 let modes: Vec<String> = self.draft.as_ref()
@@ -133,7 +171,11 @@ impl eframe::App for App {
                     let selected = self.draft.as_ref()
                         .map(|d| d.config.active_mode == m)
                         .unwrap_or(false);
-                    if ui.selectable_label(selected, &m).clicked() {
+                    let resp = ui.add_enabled(
+                        !disabled_now,
+                        egui::SelectableLabel::new(selected, &m),
+                    );
+                    if resp.clicked() {
                         if let Some(d) = &mut self.draft {
                             d.config.active_mode = m;
                         }
@@ -159,6 +201,10 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 let (status_text, color) = match (&self.error, &self.server) {
                     (Some(e), _) => (e.clone(), Color32::from_rgb(220, 80, 80)),
+                    (None, Some(s)) if s.config.disabled => (
+                        format!("daemon: ● running   kill switch: ON   throttled: {}", s.throttled_units.len()),
+                        Color32::from_rgb(220, 160, 70),
+                    ),
                     (None, Some(s)) => (
                         format!("daemon: ● running   throttled: {}", s.throttled_units.len()),
                         Color32::from_rgb(120, 200, 120),

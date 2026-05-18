@@ -74,6 +74,8 @@ niri-battery-keeper status                 # print state and exit
 niri-battery-keeper mode minimal           # background apps: 5% CPU
 niri-battery-keeper mode pause             # background apps: frozen (0% CPU)
 niri-battery-keeper mode off               # no restrictions
+niri-battery-keeper disable                # KILL SWITCH on — release every scope, stop applying anything
+niri-battery-keeper enable                 # KILL SWITCH off — resume normal operation
 ```
 
 Useful Niri keybinds (`~/.config/niri/config.kdl`):
@@ -82,7 +84,24 @@ Useful Niri keybinds (`~/.config/niri/config.kdl`):
 Mod+Shift+P { spawn "niri-battery-keeper" "mode" "pause"; }
 Mod+Shift+M { spawn "niri-battery-keeper" "mode" "minimal"; }
 Mod+Shift+O { spawn "niri-battery-keeper" "mode" "off"; }
+Mod+Shift+K { spawn "niri-battery-keeper" "disable"; }   # panic button
+Mod+Shift+J { spawn "niri-battery-keeper" "enable"; }
 ```
+
+## Kill switch (panic button)
+
+`disable` is a global override that beats every other setting. When engaged
+it overrides `active_mode` AND every per-app `profile` / `use_mode` rule,
+unfreezes/clears every scope the daemon had touched, and stops applying new
+restrictions until you `enable` again. The daemon keeps running and tracking
+focus events, so re-enabling is instant. State persists in `config.toml`
+across daemon restarts.
+
+Use this when you're experimenting with profiles and want a single
+reliable knob that guarantees the program has zero effect on your system.
+If the daemon itself is hung and unresponsive to IPC,
+`systemctl --user stop niri-battery-keeper.service` runs the same cleanup
+via SIGTERM.
 
 ## Default modes
 

@@ -440,6 +440,23 @@ fn handle_ipc(state: &mut State, config: &mut Config, m: ipc::IpcMessage) {
             state.reconcile(config);
             Response::Ok
         }
+        Request::SetDisabled { disabled } => {
+            if config.disabled != disabled {
+                config.disabled = disabled;
+                if let Err(e) = config.save_to(&Config::path()) {
+                    log::warn!("could not save config: {e}");
+                }
+                if disabled {
+                    log::info!("kill switch engaged — releasing all managed scopes");
+                    state.throttler.reset_all();
+                    state.pending.clear();
+                } else {
+                    log::info!("kill switch released — resuming normal operation");
+                    state.reconcile(config);
+                }
+            }
+            Response::Ok
+        }
         Request::Reload => {
             *config = Config::load_or_default();
             state.reconcile(config);

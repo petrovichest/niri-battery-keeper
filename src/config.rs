@@ -12,6 +12,12 @@ pub struct Config {
     pub policy: Policy,
     #[serde(default)]
     pub apps: BTreeMap<String, AppRule>,
+    /// Master kill switch. When true, the daemon behaves as if every app were
+    /// excluded — overrides active_mode, per-app `profile` and per-app
+    /// `use_mode` rules. Existing scopes get unthrottled on next reconcile.
+    /// Only `Exclude` is unaffected (it stays excluded either way).
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 /// What to do with an unfocused app.
@@ -99,6 +105,7 @@ impl Default for Config {
             modes,
             policy: Policy::default(),
             apps: BTreeMap::new(),
+            disabled: false,
         }
     }
 }
@@ -150,6 +157,9 @@ impl Config {
     /// Effective profile for a given app_id. `Profile::None` (or excluded ⇒
     /// `None`) both mean "leave this app alone".
     pub fn resolve_profile(&self, app_id: &str) -> Option<Profile> {
+        if self.disabled {
+            return None;
+        }
         if self.policy.hardcoded_exclude.iter().any(|s| s == app_id) {
             return None;
         }

@@ -13,6 +13,8 @@ fn print_usage() {
            niri-battery-keeper daemon         run daemon (for systemd user service)\n  \
            niri-battery-keeper mode <name>    switch global mode (off|minimal|pause|…)\n  \
            niri-battery-keeper status         print daemon state and exit\n  \
+           niri-battery-keeper disable        kill switch ON — release every scope, stop applying anything\n  \
+           niri-battery-keeper enable         kill switch OFF — resume normal operation\n  \
            niri-battery-keeper --help         show this help"
     );
 }
@@ -30,6 +32,8 @@ fn main() -> ExitCode {
         [cmd] if cmd == "daemon" => daemon::run(),
         [cmd] if cmd == "status" => proto::client::print_status(),
         [cmd, mode] if cmd == "mode" => proto::client::set_mode(mode),
+        [cmd] if cmd == "disable" => proto::client::set_disabled(true),
+        [cmd] if cmd == "enable" => proto::client::set_disabled(false),
         [cmd] if cmd == "--help" || cmd == "-h" => {
             print_usage();
             return ExitCode::SUCCESS;

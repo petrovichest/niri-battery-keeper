@@ -9,6 +9,7 @@ pub enum Request {
     GetState,
     SetMode { mode: String },
     SetConfig { config: Config },
+    SetDisabled { disabled: bool },
     Reload,
 }
 
@@ -92,6 +93,8 @@ pub mod client {
         let resp = send(&Request::GetState)?;
         match resp {
             Response::State(st) => {
+                let switch = if st.config.disabled { "OFF (kill switch engaged)" } else { "on" };
+                println!("Daemon: {switch}");
                 println!("Mode: {}", st.active_mode);
                 println!("Throttled units: {}", st.throttled_units.len());
                 println!();
@@ -122,6 +125,21 @@ pub mod client {
         match resp {
             Response::Ok | Response::State(_) => {
                 println!("mode set to {mode}");
+                Ok(())
+            }
+            Response::Error { message } => Err(message.into()),
+        }
+    }
+
+    pub fn set_disabled(disabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let resp = send(&Request::SetDisabled { disabled })?;
+        match resp {
+            Response::Ok | Response::State(_) => {
+                if disabled {
+                    println!("kill switch engaged — all scopes will be released");
+                } else {
+                    println!("daemon re-enabled");
+                }
                 Ok(())
             }
             Response::Error { message } => Err(message.into()),

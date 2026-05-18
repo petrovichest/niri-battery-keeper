@@ -7,6 +7,13 @@
 # (`niri-battery-keeper mode <name>`), or by editing this and reloading.
 active_mode = "off"
 
+# Master kill switch. When true, the daemon stops applying ANY restriction
+# regardless of mode or per-app rules, and releases every scope it had
+# touched. Use this as a "panic button" when an experiment leaves apps
+# stuck. Toggle from CLI (`niri-battery-keeper disable` / `enable`) or
+# from the red bar at the top of the GUI.
+disabled = false
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Modes
 #
