@@ -19,9 +19,60 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "niri-battery-keeper",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(|cc| {
+            configure_ui(&cc.egui_ctx);
+            Ok(Box::new(App::new()))
+        }),
     )
     .map_err(|e| -> Box<dyn std::error::Error> { format!("eframe: {e}").into() })
+}
+
+fn configure_ui(ctx: &egui::Context) {
+    let zoom = load_persisted_zoom().unwrap_or_else(|| detect_native_zoom(ctx));
+    if (zoom - 1.0).abs() > f32::EPSILON {
+        ctx.set_zoom_factor(zoom);
+    }
+}
+
+/// Multiplier applied to every scroll delta (mouse wheel + touchpad).
+/// Touchpad events come through egui as raw pixel deltas (`MouseWheelUnit::Point`)
+/// and bypass `Options::line_scroll_speed`, so the only way to make touchpad
+/// scrolling feel system-native is to scale the already-accumulated delta.
+const SCROLL_BOOST: f32 = 4.0;
+
+fn detect_native_zoom(ctx: &egui::Context) -> f32 {
+    ctx.native_pixels_per_point()
+        .filter(|p| (*p - 1.0).abs() > 0.05 && (0.5..8.0).contains(p))
+        .unwrap_or(1.0)
+}
+
+fn gui_state_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            home.join(".config")
+        });
+    base.join("niri-battery-keeper").join("gui_state.toml")
+}
+
+fn load_persisted_zoom() -> Option<f32> {
+    let text = std::fs::read_to_string(gui_state_path()).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    let v = table.get("zoom_factor")?.as_float()? as f32;
+    (0.5..8.0).contains(&v).then_some(v)
+}
+
+fn save_persisted_zoom(z: f32) -> std::io::Result<()> {
+    let path = gui_state_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut table = toml::Table::new();
+    table.insert("zoom_factor".into(), toml::Value::Float(z as f64));
+    std::fs::write(path, toml::to_string_pretty(&table).unwrap_or_default())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,6 +99,8 @@ struct App {
     /// In-progress rename buffers for the preset editor, keyed by the current
     /// canonical preset name. Only entries actively being edited live here.
     preset_name_drafts: BTreeMap<String, String>,
+    scale_settled: bool,
+    last_persisted_zoom: f32,
 }
 
 impl App {
@@ -60,6 +113,8 @@ impl App {
             view: View::Apps,
             preset_edit_mode: PresetEditMode::Simple,
             preset_name_drafts: BTreeMap::new(),
+            scale_settled: false,
+            last_persisted_zoom: 1.0,
         };
         me.poll();
         me
@@ -131,6 +186,30 @@ fn sync_runtime_into_draft(draft: &mut DaemonState, server: &DaemonState) {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.scale_settled {
+            self.scale_settled = true;
+            if load_persisted_zoom().is_none() {
+                let want = detect_native_zoom(ctx);
+                if (want - ctx.zoom_factor()).abs() > 0.01 {
+                    ctx.set_zoom_factor(want);
+                }
+            }
+            self.last_persisted_zoom = ctx.zoom_factor();
+        }
+
+        let current_zoom = ctx.zoom_factor();
+        if (current_zoom - self.last_persisted_zoom).abs() > 0.001 {
+            self.last_persisted_zoom = current_zoom;
+            if let Err(e) = save_persisted_zoom(current_zoom) {
+                log::warn!("could not persist gui zoom: {e}");
+            }
+        }
+
+        ctx.input_mut(|i| {
+            i.smooth_scroll_delta *= SCROLL_BOOST;
+            i.raw_scroll_delta *= SCROLL_BOOST;
+        });
+
         // Periodic re-poll for live state.
         if self.last_poll.elapsed() > Duration::from_secs(1) {
             self.poll();
