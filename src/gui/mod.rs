@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText, ScrollArea};
@@ -44,6 +45,9 @@ struct App {
     error: Option<String>,
     view: View,
     preset_edit_mode: PresetEditMode,
+    /// In-progress rename buffers for the preset editor, keyed by the current
+    /// canonical preset name. Only entries actively being edited live here.
+    preset_name_drafts: BTreeMap<String, String>,
 }
 
 impl App {
@@ -55,6 +59,7 @@ impl App {
             error: None,
             view: View::Apps,
             preset_edit_mode: PresetEditMode::Simple,
+            preset_name_drafts: BTreeMap::new(),
         };
         me.poll();
         me
@@ -249,10 +254,13 @@ impl eframe::App for App {
             ScrollArea::vertical().show(ui, |ui| {
                 let view = self.view;
                 let preset_mode = &mut self.preset_edit_mode;
+                let drafts = &mut self.preset_name_drafts;
                 let draft_ref = self.draft.as_mut().unwrap();
                 match view {
                     View::Apps => draw_app_list(ui, draft_ref),
-                    View::Presets => draw_preset_editor(ui, &mut draft_ref.config, preset_mode),
+                    View::Presets => {
+                        draw_preset_editor(ui, &mut draft_ref.config, preset_mode, drafts)
+                    }
                 }
             });
         });
@@ -539,7 +547,12 @@ fn format_limits(l: &CgroupLimits) -> String {
     )
 }
 
-fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetEditMode) {
+fn draw_preset_editor(
+    ui: &mut egui::Ui,
+    config: &mut Config,
+    mode: &mut PresetEditMode,
+    name_drafts: &mut BTreeMap<String, String>,
+) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Edit mode:").strong());
@@ -554,19 +567,16 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetE
 
     match mode {
         PresetEditMode::Simple => {
-            ui.label(RichText::new("Each Throttle preset uses one percentage that caps CPU and lowers CPU/IO scheduling weights together.").weak().small());
+            ui.label(RichText::new("Each preset uses one percentage that caps CPU and lowers CPU/IO scheduling weights together.").weak().small());
         }
         PresetEditMode::Advanced => {
-            ui.label(RichText::new("Each preset chooses one of three actions for unfocused apps:").weak().small());
-            ui.label(RichText::new("  • Off  — leave the app alone").weak().small());
-            ui.label(RichText::new("  • Throttle  — cap CPU% and weights").weak().small());
-            ui.label(RichText::new("  • Pause  — freeze the app entirely (0% CPU)").weak().small());
+            ui.label(RichText::new("Each preset throttles unfocused apps with three independent knobs: CPU quota (% of one core), CPU scheduling weight, and IO scheduling weight.").weak().small());
         }
     }
     ui.add_space(8.0);
 
     let is_simple = *mode == PresetEditMode::Simple;
-    let num_columns = if is_simple { 4 } else { 6 };
+    let num_columns = if is_simple { 3 } else { 5 };
 
     egui::Grid::new("presets-grid")
         .num_columns(num_columns)
@@ -574,7 +584,6 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetE
         .min_col_width(60.0)
         .show(ui, |ui| {
             ui.label(RichText::new("Name").strong());
-            ui.label(RichText::new("Action").strong());
             if is_simple {
                 ui.label(RichText::new("Resources %").strong());
             } else {
@@ -585,69 +594,64 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetE
             ui.label("");
             ui.end_row();
 
-            let names: Vec<String> = config.modes.keys().cloned().collect();
+            let names: Vec<String> = config
+                .modes
+                .iter()
+                .filter(|(_, p)| matches!(p, Profile::Throttle { .. }))
+                .map(|(k, _)| k.clone())
+                .collect();
             let mut to_remove: Option<String> = None;
+            let mut to_rename: Option<(String, String)> = None;
             for name in names {
-                ui.label(&name);
-
-                let p = config.modes.get(&name).cloned().unwrap();
-                let current_kind = match &p {
-                    Profile::None => "off",
-                    Profile::Throttle { .. } => "throttle",
-                    Profile::Pause => "pause",
-                };
-                let mut new_profile = p.clone();
-                egui::ComboBox::from_id_salt(format!("action-{name}"))
-                    .selected_text(current_kind)
-                    .show_ui(ui, |ui| {
-                        if ui.selectable_label(current_kind == "off", "off").clicked() {
-                            new_profile = Profile::None;
-                        }
-                        if ui.selectable_label(current_kind == "throttle", "throttle").clicked() {
-                            if !matches!(p, Profile::Throttle { .. }) {
-                                new_profile = Profile::Throttle {
-                                    cpu_quota: CpuQuota("50%".into()),
-                                    cpu_weight: 50,
-                                    io_weight: 50,
-                                };
-                            }
-                        }
-                        if ui.selectable_label(current_kind == "pause", "pause").clicked() {
-                            new_profile = Profile::Pause;
-                        }
-                    });
-
-                match &mut new_profile {
-                    Profile::Throttle { cpu_quota, cpu_weight, io_weight } => {
-                        if is_simple {
-                            let mut pct = parse_pct(&cpu_quota.0).unwrap_or(50).clamp(1, 100);
-                            if ui.add(egui::DragValue::new(&mut pct).range(1..=100).suffix("%")).changed() {
-                                let n = pct.max(1) as u32;
-                                cpu_quota.0 = format!("{n}%");
-                                *cpu_weight = n;
-                                *io_weight = n;
-                            }
-                        } else {
-                            let mut quota_pct = parse_pct(&cpu_quota.0).unwrap_or(50);
-                            if ui.add(egui::DragValue::new(&mut quota_pct).range(1..=1000).suffix("%")).changed() {
-                                cpu_quota.0 = format!("{quota_pct}%");
-                            }
-                            let mut w = *cpu_weight as i32;
-                            if ui.add(egui::DragValue::new(&mut w).range(1..=10000)).changed() {
-                                *cpu_weight = w.max(1) as u32;
-                            }
-                            let mut iow = *io_weight as i32;
-                            if ui.add(egui::DragValue::new(&mut iow).range(1..=10000)).changed() {
-                                *io_weight = iow.max(1) as u32;
-                            }
-                        }
+                // Name as editable TextEdit, backed by a per-row draft buffer.
+                let draft = name_drafts
+                    .entry(name.clone())
+                    .or_insert_with(|| name.clone());
+                let resp = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .id_salt(format!("preset-name-{name}"))
+                        .desired_width(120.0),
+                );
+                if resp.lost_focus() {
+                    let trimmed = draft.trim().to_string();
+                    if trimmed.is_empty() || trimmed == name {
+                        *draft = name.clone();
+                    } else if config.modes.contains_key(&trimmed) {
+                        // Collision with another existing preset — silently revert.
+                        *draft = name.clone();
+                    } else {
+                        to_rename = Some((name.clone(), trimmed));
                     }
-                    _ => {
-                        ui.label(RichText::new("—").weak());
-                        if !is_simple {
-                            ui.label(RichText::new("—").weak());
-                            ui.label(RichText::new("—").weak());
-                        }
+                }
+
+                let Some(Profile::Throttle { cpu_quota, cpu_weight, io_weight }) =
+                    config.modes.get_mut(&name)
+                else {
+                    // Shouldn't happen — we filtered to Throttle above.
+                    ui.end_row();
+                    continue;
+                };
+
+                if is_simple {
+                    let mut pct = parse_pct(&cpu_quota.0).unwrap_or(50).clamp(1, 100);
+                    if ui.add(egui::DragValue::new(&mut pct).range(1..=100).suffix("%")).changed() {
+                        let n = pct.max(1) as u32;
+                        cpu_quota.0 = format!("{n}%");
+                        *cpu_weight = n;
+                        *io_weight = n;
+                    }
+                } else {
+                    let mut quota_pct = parse_pct(&cpu_quota.0).unwrap_or(50);
+                    if ui.add(egui::DragValue::new(&mut quota_pct).range(1..=1000).suffix("%")).changed() {
+                        cpu_quota.0 = format!("{quota_pct}%");
+                    }
+                    let mut w = *cpu_weight as i32;
+                    if ui.add(egui::DragValue::new(&mut w).range(1..=10000)).changed() {
+                        *cpu_weight = w.max(1) as u32;
+                    }
+                    let mut iow = *io_weight as i32;
+                    if ui.add(egui::DragValue::new(&mut iow).range(1..=10000)).changed() {
+                        *io_weight = iow.max(1) as u32;
                     }
                 }
 
@@ -655,10 +659,22 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetE
                     to_remove = Some(name.clone());
                 }
                 ui.end_row();
-
-                if new_profile != p {
-                    config.modes.insert(name, new_profile);
+            }
+            if let Some((old, new)) = to_rename {
+                if let Some(profile) = config.modes.remove(&old) {
+                    config.modes.insert(new.clone(), profile);
                 }
+                if config.active_mode == old {
+                    config.active_mode = new.clone();
+                }
+                for rule in config.apps.values_mut() {
+                    if let AppRule::Profile { profile } = rule {
+                        if *profile == old {
+                            *profile = new.clone();
+                        }
+                    }
+                }
+                name_drafts.remove(&old);
             }
             if let Some(name) = to_remove {
                 config.modes.remove(&name);
@@ -667,7 +683,10 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetE
                         config.active_mode = first;
                     }
                 }
+                name_drafts.remove(&name);
             }
+            // Evict stale draft entries for presets that no longer exist.
+            name_drafts.retain(|k, _| config.modes.contains_key(k));
         });
 
     ui.add_space(8.0);
