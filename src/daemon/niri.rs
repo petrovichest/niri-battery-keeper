@@ -9,15 +9,28 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Window {
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub app_id: String,
     pub pid: Option<i32>,
     #[serde(default)]
     pub workspace_id: Option<u64>,
     #[serde(default)]
     pub is_focused: bool,
+}
+
+/// Niri occasionally reports `"app_id": null` / `"title": null` (e.g. for
+/// windows that haven't set them yet, like xdg-shell popups in flight).
+/// Default `#[serde(default)]` only handles missing fields, not explicit
+/// nulls, so the whole bootstrap parse used to fail on a single such
+/// window and skip the stale-sweep. Treat null as the default value.
+fn null_to_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(|o| o.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Deserialize)]

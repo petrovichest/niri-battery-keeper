@@ -1505,6 +1505,8 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

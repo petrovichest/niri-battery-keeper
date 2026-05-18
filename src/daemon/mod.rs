@@ -4,6 +4,7 @@ pub mod throttle;
 pub mod ipc;
 pub mod proctree;
 pub mod system_scan;
+pub mod clipboard;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +45,7 @@ fn install_signals() {
 enum DaemonMsg {
     Niri(niri::Event),
     Ipc(ipc::IpcMessage),
+    Clipboard(clipboard::ClipboardEvent),
 }
 
 #[derive(Default, Debug)]
@@ -63,6 +65,12 @@ struct State {
     pending: HashMap<String, Instant>,
     cache: UnitCache,
     throttler: Throttler,
+    /// app_id of the current Wayland clipboard owner, if any. Updated each
+    /// time the compositor reports a new selection: we mark whichever app
+    /// has keyboard focus at that moment as the owner. Owner scopes are
+    /// exempt from throttling / freezing, so paste never stalls waiting on
+    /// a CPU-starved or frozen source app.
+    clipboard_owner: Option<String>,
 }
 
 impl State {
@@ -195,8 +203,9 @@ impl State {
                 (app.focused, app.scopes.keys().cloned().collect())
             };
             let profile = config.resolve_profile(&app_id);
+            let is_clipboard_owner = self.clipboard_owner.as_deref() == Some(app_id.as_str());
 
-            if focused || profile.is_none() {
+            if focused || is_clipboard_owner || profile.is_none() {
                 self.pending.remove(&app_id);
                 for scope in &scopes {
                     if self.throttler.is_throttled(scope) {
@@ -232,6 +241,7 @@ impl State {
                 None => continue,
             };
             if focused { continue; }
+            if self.clipboard_owner.as_deref() == Some(app_id.as_str()) { continue; }
             let profile = match config.resolve_profile(&app_id) {
                 Some(p) => p, None => continue,
             };
@@ -371,31 +381,61 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Wayland clipboard watcher → DaemonMsg::Clipboard
+    {
+        let tx = msg_tx.clone();
+        let (cb_tx, cb_rx) = channel::<clipboard::ClipboardEvent>();
+        clipboard::spawn_watcher(cb_tx);
+        thread::spawn(move || {
+            while let Ok(ev) = cb_rx.recv() {
+                if tx.send(DaemonMsg::Clipboard(ev)).is_err() { break; }
+            }
+        });
+    }
+
     let mut state = State::new();
 
-    // Bootstrap snapshot
+    // Bootstrap snapshot from niri (may fail; that's fine, the event-stream
+    // will catch us up).
     match niri::fetch_windows() {
         Ok(ws) => {
             log::info!("bootstrap: {} window(s)", ws.len());
             state.apply_snapshot(ws);
-
-            // Stale-sweep: any scope we now know about may carry leftovers
-            // from a prior daemon run that didn't shut down cleanly (frozen,
-            // residual CPUQuota, etc.). Take ownership by clearing them.
-            let scopes: HashSet<String> = state.apps.values()
-                .flat_map(|a| a.scopes.keys().cloned())
-                .collect();
-            if !scopes.is_empty() {
-                log::info!("stale-sweep: clearing state on {} scope(s)", scopes.len());
-                for scope in scopes {
-                    state.throttler.force_clear(&scope);
-                }
-            }
-
-            state.reconcile(&config);
         }
         Err(e) => log::warn!("bootstrap snapshot failed: {e}"),
     }
+
+    // Stale-sweep: any scope under app.slice may carry leftovers from a
+    // prior daemon run (frozen scope, residual CPUQuota) or from earlier
+    // config the in-memory `applied` map no longer mirrors. Walk the live
+    // cgroup tree and force-clear every app-*/run-*.scope with non-default
+    // limits — independent of whether niri's bootstrap succeeded, so a
+    // single unparseable window can't leave us with frozen background apps.
+    let mut sweep_targets: HashSet<String> = state.apps.values()
+        .flat_map(|a| a.scopes.keys().cloned())
+        .collect();
+    for u in system_scan::scan() {
+        if !(u.unit.starts_with("app-") || u.unit.starts_with("run-"))
+            || !u.unit.ends_with(".scope")
+        {
+            continue;
+        }
+        let dirty = u.limits.frozen
+            || (u.limits.cpu_max != "unset" && u.limits.cpu_max != "?")
+            || u.limits.cpu_weight.is_some_and(|w| w != 100)
+            || u.limits.io_weight.is_some_and(|w| w != 100);
+        if dirty {
+            sweep_targets.insert(u.unit.clone());
+        }
+    }
+    if !sweep_targets.is_empty() {
+        log::info!("stale-sweep: clearing state on {} scope(s)", sweep_targets.len());
+        for scope in sweep_targets {
+            state.throttler.force_clear(&scope);
+        }
+    }
+
+    state.reconcile(&config);
 
     log::info!("daemon ready");
 
@@ -414,6 +454,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(DaemonMsg::Ipc(m)) => {
                 handle_ipc(&mut state, &mut config, m);
             }
+            Ok(DaemonMsg::Clipboard(ev)) => {
+                handle_clipboard_event(&mut state, ev, &config);
+            }
             Err(RecvTimeoutError::Timeout) => {
                 state.process_pending(&config);
             }
@@ -425,6 +468,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     state.throttler.reset_all();
     let _ = std::fs::remove_file(proto::socket_path());
     Ok(())
+}
+
+fn handle_clipboard_event(state: &mut State, ev: clipboard::ClipboardEvent, config: &Config) {
+    let new_owner = match ev {
+        clipboard::ClipboardEvent::Cleared => None,
+        clipboard::ClipboardEvent::OwnerChanged => state
+            .focused_id
+            .and_then(|id| state.windows.get(&id))
+            .map(|w| w.app_id.clone()),
+    };
+    if new_owner == state.clipboard_owner {
+        return;
+    }
+    log::info!(
+        "clipboard owner: {} → {}",
+        state.clipboard_owner.as_deref().unwrap_or("(none)"),
+        new_owner.as_deref().unwrap_or("(none)"),
+    );
+    state.clipboard_owner = new_owner;
+    state.reconcile(config);
 }
 
 fn handle_niri_event(state: &mut State, ev: niri::Event, config: &Config) {

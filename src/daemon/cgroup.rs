@@ -22,6 +22,10 @@ const PROTECTED_COMMS: &[&str] = &[
     "waybar", "eww", "polybar",
     "fuzzel", "wofi", "rofi", "tofi", "anyrun",
     "swaync", "mako", "dunst",
+    // Clipboard tooling — the source side of a paste cannot be throttled,
+    // and these helpers (cliphist watcher, wl-copy daemons) need to respond
+    // to Wayland data-source requests on demand.
+    "wl-paste", "wl-copy", "cliphist", "clipman", "copyq",
     // Audio
     "pipewire", "pipewire-pulse", "wireplumber", "pulseaudio",
     // Auth / session
