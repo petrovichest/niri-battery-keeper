@@ -29,6 +29,12 @@ enum View {
     Presets,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PresetEditMode {
+    Simple,
+    Advanced,
+}
+
 struct App {
     /// Last state received from daemon (read-only baseline).
     server: Option<DaemonState>,
@@ -37,6 +43,7 @@ struct App {
     last_poll: Instant,
     error: Option<String>,
     view: View,
+    preset_edit_mode: PresetEditMode,
 }
 
 impl App {
@@ -47,6 +54,7 @@ impl App {
             last_poll: Instant::now() - Duration::from_secs(10),
             error: None,
             view: View::Apps,
+            preset_edit_mode: PresetEditMode::Simple,
         };
         me.poll();
         me
@@ -239,10 +247,12 @@ impl eframe::App for App {
                 return;
             }
             ScrollArea::vertical().show(ui, |ui| {
+                let view = self.view;
+                let preset_mode = &mut self.preset_edit_mode;
                 let draft_ref = self.draft.as_mut().unwrap();
-                match self.view {
+                match view {
                     View::Apps => draw_app_list(ui, draft_ref),
-                    View::Presets => draw_preset_editor(ui, &mut draft_ref.config),
+                    View::Presets => draw_preset_editor(ui, &mut draft_ref.config, preset_mode),
                 }
             });
         });
@@ -529,24 +539,49 @@ fn format_limits(l: &CgroupLimits) -> String {
     )
 }
 
-fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config) {
+fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config, mode: &mut PresetEditMode) {
     ui.add_space(4.0);
-    ui.label(RichText::new("Each preset chooses one of three actions for unfocused apps:").weak().small());
-    ui.label(RichText::new("  • Off  — leave the app alone").weak().small());
-    ui.label(RichText::new("  • Throttle  — cap CPU% and weights").weak().small());
-    ui.label(RichText::new("  • Pause  — freeze the app entirely (0% CPU)").weak().small());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Edit mode:").strong());
+        if ui.selectable_label(*mode == PresetEditMode::Simple, "Simple").clicked() {
+            *mode = PresetEditMode::Simple;
+        }
+        if ui.selectable_label(*mode == PresetEditMode::Advanced, "Advanced").clicked() {
+            *mode = PresetEditMode::Advanced;
+        }
+    });
+    ui.add_space(4.0);
+
+    match mode {
+        PresetEditMode::Simple => {
+            ui.label(RichText::new("Each Throttle preset uses one percentage that caps CPU and lowers CPU/IO scheduling weights together.").weak().small());
+        }
+        PresetEditMode::Advanced => {
+            ui.label(RichText::new("Each preset chooses one of three actions for unfocused apps:").weak().small());
+            ui.label(RichText::new("  • Off  — leave the app alone").weak().small());
+            ui.label(RichText::new("  • Throttle  — cap CPU% and weights").weak().small());
+            ui.label(RichText::new("  • Pause  — freeze the app entirely (0% CPU)").weak().small());
+        }
+    }
     ui.add_space(8.0);
 
+    let is_simple = *mode == PresetEditMode::Simple;
+    let num_columns = if is_simple { 4 } else { 6 };
+
     egui::Grid::new("presets-grid")
-        .num_columns(6)
+        .num_columns(num_columns)
         .striped(true)
         .min_col_width(60.0)
         .show(ui, |ui| {
             ui.label(RichText::new("Name").strong());
             ui.label(RichText::new("Action").strong());
-            ui.label(RichText::new("CPU %").strong());
-            ui.label(RichText::new("CPU Weight").strong());
-            ui.label(RichText::new("IO Weight").strong());
+            if is_simple {
+                ui.label(RichText::new("Resources %").strong());
+            } else {
+                ui.label(RichText::new("CPU %").strong());
+                ui.label(RichText::new("CPU Weight").strong());
+                ui.label(RichText::new("IO Weight").strong());
+            }
             ui.label("");
             ui.end_row();
 
@@ -584,23 +619,35 @@ fn draw_preset_editor(ui: &mut egui::Ui, config: &mut Config) {
 
                 match &mut new_profile {
                     Profile::Throttle { cpu_quota, cpu_weight, io_weight } => {
-                        let mut quota_pct = parse_pct(&cpu_quota.0).unwrap_or(50);
-                        if ui.add(egui::DragValue::new(&mut quota_pct).range(1..=1000).suffix("%")).changed() {
-                            cpu_quota.0 = format!("{quota_pct}%");
-                        }
-                        let mut w = *cpu_weight as i32;
-                        if ui.add(egui::DragValue::new(&mut w).range(1..=10000)).changed() {
-                            *cpu_weight = w.max(1) as u32;
-                        }
-                        let mut iow = *io_weight as i32;
-                        if ui.add(egui::DragValue::new(&mut iow).range(1..=10000)).changed() {
-                            *io_weight = iow.max(1) as u32;
+                        if is_simple {
+                            let mut pct = parse_pct(&cpu_quota.0).unwrap_or(50).clamp(1, 100);
+                            if ui.add(egui::DragValue::new(&mut pct).range(1..=100).suffix("%")).changed() {
+                                let n = pct.max(1) as u32;
+                                cpu_quota.0 = format!("{n}%");
+                                *cpu_weight = n;
+                                *io_weight = n;
+                            }
+                        } else {
+                            let mut quota_pct = parse_pct(&cpu_quota.0).unwrap_or(50);
+                            if ui.add(egui::DragValue::new(&mut quota_pct).range(1..=1000).suffix("%")).changed() {
+                                cpu_quota.0 = format!("{quota_pct}%");
+                            }
+                            let mut w = *cpu_weight as i32;
+                            if ui.add(egui::DragValue::new(&mut w).range(1..=10000)).changed() {
+                                *cpu_weight = w.max(1) as u32;
+                            }
+                            let mut iow = *io_weight as i32;
+                            if ui.add(egui::DragValue::new(&mut iow).range(1..=10000)).changed() {
+                                *io_weight = iow.max(1) as u32;
+                            }
                         }
                     }
                     _ => {
                         ui.label(RichText::new("—").weak());
-                        ui.label(RichText::new("—").weak());
-                        ui.label(RichText::new("—").weak());
+                        if !is_simple {
+                            ui.label(RichText::new("—").weak());
+                            ui.label(RichText::new("—").weak());
+                        }
                     }
                 }
 
