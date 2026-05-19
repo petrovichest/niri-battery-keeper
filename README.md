@@ -50,9 +50,33 @@ welcome.
 - **cgroup v2** as the unified hierarchy (default on Arch, Fedora 32+, Ubuntu 21.10+, Debian 12+, etc.)
 - **Niri** with `niri msg --json event-stream` (verified on 26.04)
 - Wayland session
-- Rust toolchain to build (`rustc` 1.80+ is enough)
 
-## Build & install
+## Install (from release)
+
+Grab the latest x86_64 build — no Rust toolchain needed.
+
+```sh
+curl -L https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-x86_64-linux.tar.gz | tar xz
+cd niri-battery-keeper-*-x86_64-linux
+
+install -Dm755 niri-battery-keeper ~/.local/bin/niri-battery-keeper
+install -Dm644 systemd/niri-battery-keeper.service \
+               ~/.config/systemd/user/niri-battery-keeper.service
+systemctl --user daemon-reload
+systemctl --user enable --now niri-battery-keeper.service
+```
+
+Or, if you only want the binary and will write the unit yourself:
+
+```sh
+curl -L -o ~/.local/bin/niri-battery-keeper \
+  https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-x86_64-linux
+chmod +x ~/.local/bin/niri-battery-keeper
+```
+
+## Build from source
+
+Needs `rustc` 1.80+.
 
 ```sh
 git clone https://github.com/petrovichest/niri-battery-keeper.git

@@ -64,16 +64,25 @@ jobs:
         id: pkg
         run: |
           version="${{ steps.tag.outputs.version }}"
-          name="niri-battery-keeper-v${version}-x86_64-linux"
-          stage="dist/${name}"
+          # Folder inside the tarball keeps the version (useful when unpacked
+          # multiple versions side-by-side); asset filenames are unversioned
+          # so the `releases/latest/download/<asset>` URL stays stable.
+          folder="niri-battery-keeper-v${version}-x86_64-linux"
+          tarball="niri-battery-keeper-x86_64-linux.tar.gz"
+          binary="niri-battery-keeper-x86_64-linux"
+          stage="dist/${folder}"
           mkdir -p "$stage"
           cp target/release/niri-battery-keeper "$stage/"
           cp -r systemd "$stage/"
           cp config.example.toml README.md LICENSE CHANGELOG.md "$stage/"
-          tar -C dist -czf "dist/${name}.tar.gz" "$name"
-          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
-          echo "tarball=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "sha=dist/${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+          tar -C dist -czf "dist/${tarball}" "$folder"
+          cp target/release/niri-battery-keeper "dist/${binary}"
+          ( cd dist && sha256sum "${tarball}" > "${tarball}.sha256" )
+          ( cd dist && sha256sum "${binary}" > "${binary}.sha256" )
+          echo "tarball=dist/${tarball}" >> "$GITHUB_OUTPUT"
+          echo "tarball_sha=dist/${tarball}.sha256" >> "$GITHUB_OUTPUT"
+          echo "binary=dist/${binary}" >> "$GITHUB_OUTPUT"
+          echo "binary_sha=dist/${binary}.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Extract release notes for this tag
         id: notes
@@ -108,7 +117,9 @@ jobs:
           if gh release view "$ref" >/dev/null 2>&1; then
             gh release upload "$ref" \
               "${{ steps.pkg.outputs.tarball }}" \
-              "${{ steps.pkg.outputs.sha }}" \
+              "${{ steps.pkg.outputs.tarball_sha }}" \
+              "${{ steps.pkg.outputs.binary }}" \
+              "${{ steps.pkg.outputs.binary_sha }}" \
               --clobber
           else
             gh release create "$ref" \
@@ -116,5 +127,7 @@ jobs:
               --notes-file release-notes.md \
               $prerelease_flag \
               "${{ steps.pkg.outputs.tarball }}" \
-              "${{ steps.pkg.outputs.sha }}"
+              "${{ steps.pkg.outputs.tarball_sha }}" \
+              "${{ steps.pkg.outputs.binary }}" \
+              "${{ steps.pkg.outputs.binary_sha }}"
           fi

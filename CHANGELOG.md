@@ -5,6 +5,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-20
+
+### Added
+- Standalone binary asset `niri-battery-keeper-x86_64-linux` published
+  alongside the tarball, so `curl -LO` works without untarring.
+- "Install (from release)" section in README pointing at
+  `releases/latest/download/…`, so users without a Rust toolchain don't
+  have to build from source.
+
+### Changed
+- Release tarball renamed to `niri-battery-keeper-x86_64-linux.tar.gz`
+  (no version in filename) so the GitHub `latest/download` URL is stable.
+  The folder inside still carries the version.
+
 ## [0.1.0] — 2026-05-20
 
 First public release. Pre-1.0 / work in progress.
@@ -36,5 +50,6 @@ First public release. Pre-1.0 / work in progress.
 - systemd user unit (`systemd/niri-battery-keeper.service`) running under
   `session.slice` so the daemon never throttles itself.
 
-[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/petrovichest/niri-battery-keeper/releases/tag/v0.1.0

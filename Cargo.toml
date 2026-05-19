@@ -1,6 +1,6 @@
 [package]
 name = "niri-battery-keeper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Keeps battery on a Niri laptop by reining in background apps via systemd cgroups"
 license = "MIT"
