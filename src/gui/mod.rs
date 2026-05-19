@@ -257,6 +257,35 @@ impl App {
             self.draft = Some(server.clone());
         }
     }
+
+    /// Restart the systemd user unit so a fresh binary picks up (or to recover
+    /// from a wedged daemon). Blocks until systemctl returns — usually
+    /// sub-second, but the new daemon's stale-sweep can add another second on
+    /// top. Force the next poll immediately so the footer reflects reality.
+    fn restart_daemon(&mut self) {
+        use std::process::Command;
+        let result = Command::new("systemctl")
+            .args(["--user", "restart", "niri-battery-keeper.service"])
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                self.error = None;
+                self.last_poll = Instant::now() - Duration::from_secs(10);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let msg = stderr.trim();
+                self.error = Some(if msg.is_empty() {
+                    format!("restart failed ({})", out.status)
+                } else {
+                    format!("restart failed: {msg}")
+                });
+            }
+            Err(e) => {
+                self.error = Some(format!("restart failed: {e}"));
+            }
+        }
+    }
 }
 
 fn sync_runtime_into_draft(draft: &mut DaemonState, server: &DaemonState) {
@@ -404,6 +433,17 @@ impl eframe::App for App {
                     }
                     if ui.add_enabled(dirty, egui::Button::new("Discard")).clicked() {
                         self.discard();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("↻ Restart daemon")
+                        .on_hover_text(
+                            "systemctl --user restart niri-battery-keeper.service\n\
+                             Use after updating the binary or to recover from a wedged daemon.",
+                        )
+                        .clicked()
+                    {
+                        self.restart_daemon();
                     }
                 });
             });
