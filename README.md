@@ -17,6 +17,10 @@ charge.
 One static binary (≈ 5 MB stripped). Rust + egui + `systemctl --user`.
 Works on any modern Linux with systemd ≥ 246 and cgroup v2.
 
+| Apps view | Presets view |
+|-----------|--------------|
+| ![Apps tab](assets/gui-apps.png) | ![Presets tab](assets/gui-presets.png) |
+
 ## What it does
 
 - Listens to `niri msg --json event-stream` for window focus events.

@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Must already exist."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ref="${{ github.event.inputs.tag }}"
+          else
+            ref="${GITHUB_REF#refs/tags/}"
+          fi
+          version="${ref#v}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          cargo_version=$(awk -F\" '/^version *=/ {print $2; exit}' Cargo.toml)
+          if [ "$cargo_version" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::Cargo.toml version ($cargo_version) does not match tag (${{ steps.tag.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package artifacts
+        id: pkg
+        run: |
+          version="${{ steps.tag.outputs.version }}"
+          name="niri-battery-keeper-v${version}-x86_64-linux"
+          stage="dist/${name}"
+          mkdir -p "$stage"
+          cp target/release/niri-battery-keeper "$stage/"
+          cp -r systemd "$stage/"
+          cp config.example.toml README.md LICENSE CHANGELOG.md "$stage/"
+          tar -C dist -czf "dist/${name}.tar.gz" "$name"
+          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          echo "tarball=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes for this tag
+        id: notes
+        run: |
+          version="${{ steps.tag.outputs.version }}"
+          if [ ! -f CHANGELOG.md ]; then
+            echo "No CHANGELOG.md, falling back to auto notes." >&2
+            echo "" > release-notes.md
+            exit 0
+          fi
+          awk -v ver="$version" '
+            BEGIN { in_section = 0 }
+            /^## \[/ {
+              if (in_section) { exit }
+              if (index($0, "[" ver "]") > 0) { in_section = 1; next }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::No CHANGELOG section found for v${version}; release notes will be empty."
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ref="${{ steps.tag.outputs.ref }}"
+          prerelease_flag=""
+          case "$ref" in
+            *-*) prerelease_flag="--prerelease" ;;
+          esac
+          if gh release view "$ref" >/dev/null 2>&1; then
+            gh release upload "$ref" \
+              "${{ steps.pkg.outputs.tarball }}" \
+              "${{ steps.pkg.outputs.sha }}" \
+              --clobber
+          else
+            gh release create "$ref" \
+              --title "$ref" \
+              --notes-file release-notes.md \
+              $prerelease_flag \
+              "${{ steps.pkg.outputs.tarball }}" \
+              "${{ steps.pkg.outputs.sha }}"
+          fi
