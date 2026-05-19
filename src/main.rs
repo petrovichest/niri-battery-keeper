@@ -5,6 +5,13 @@ mod gui;
 
 use std::process::ExitCode;
 
+/// Wayland `app_id` of our own GUI window. Used by the GUI to tag its
+/// xdg_toplevel and by the daemon to skip the GUI's own window when
+/// building its managed-apps list — otherwise we'd see ourselves as an
+/// unfocused app and try to throttle the very process the user is
+/// looking at.
+pub const SELF_APP_ID: &str = "niri-battery-keeper";
+
 fn print_usage() {
     eprintln!(
         "niri-battery-keeper — focus-driven CPU/IO governor for unfocused apps on Niri\n\n\

@@ -11,13 +11,17 @@ use crate::proto::{
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Niri Throttle")
+            .with_title("Niri Battery Keeper")
+            // Without `with_app_id`, eframe doesn't call `WindowAttributesExtWayland::with_name`,
+            // so the xdg_toplevel ships without an app_id and Niri reports our window as
+            // `"app_id": null`. The daemon then lists its own GUI as an unnamed app.
+            .with_app_id(crate::SELF_APP_ID)
             .with_inner_size([720.0, 720.0])
             .with_min_inner_size([520.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "niri-battery-keeper",
+        crate::SELF_APP_ID,
         options,
         Box::new(|cc| {
             configure_ui(&cc.egui_ctx);
@@ -28,10 +32,53 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn configure_ui(ctx: &egui::Context) {
-    let zoom = load_persisted_zoom().unwrap_or_else(|| detect_native_zoom(ctx));
+    let state = load_persisted_state();
+    let zoom = state.zoom_factor.unwrap_or_else(|| detect_native_zoom(ctx));
     if (zoom - 1.0).abs() > f32::EPSILON {
         ctx.set_zoom_factor(zoom);
     }
+    install_symbol_font_fallbacks(ctx);
+}
+
+/// egui's bundled fonts (Ubuntu-Light + emoji-icon-font + NotoEmoji) miss
+/// several Geometric Shapes glyphs we use in labels (e.g. U+25B0 ▰, U+25B1 ▱,
+/// U+25B8 ▸), so they render as tofu. Append the first available system symbol
+/// fonts to both font families' fallback chains. Silent no-op if none found.
+fn install_symbol_font_fallbacks(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ];
+
+    let mut fonts = egui::FontDefinitions::default();
+    let mut added: Vec<String> = Vec::new();
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Some(name) = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_owned())
+        else {
+            continue;
+        };
+        fonts
+            .font_data
+            .insert(name.clone(), egui::FontData::from_owned(bytes));
+        added.push(name);
+    }
+    if added.is_empty() {
+        return;
+    }
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let chain = fonts.families.entry(family).or_default();
+        for name in &added {
+            if !chain.iter().any(|n| n == name) {
+                chain.push(name.clone());
+            }
+        }
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Multiplier applied to every scroll delta (mouse wheel + touchpad).
@@ -58,20 +105,54 @@ fn gui_state_path() -> std::path::PathBuf {
     base.join("niri-battery-keeper").join("gui_state.toml")
 }
 
-fn load_persisted_zoom() -> Option<f32> {
-    let text = std::fs::read_to_string(gui_state_path()).ok()?;
-    let table: toml::Table = text.parse().ok()?;
-    let v = table.get("zoom_factor")?.as_float()? as f32;
-    (0.5..8.0).contains(&v).then_some(v)
+#[derive(Clone, Default)]
+struct PersistedGuiState {
+    zoom_factor: Option<f32>,
+    collapsed_orphans: bool,
+    collapsed_protected: bool,
 }
 
-fn save_persisted_zoom(z: f32) -> std::io::Result<()> {
+fn load_persisted_state() -> PersistedGuiState {
+    let Ok(text) = std::fs::read_to_string(gui_state_path()) else {
+        return PersistedGuiState::default();
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return PersistedGuiState::default();
+    };
+    PersistedGuiState {
+        zoom_factor: table
+            .get("zoom_factor")
+            .and_then(|v| v.as_float())
+            .map(|v| v as f32)
+            .filter(|v| (0.5..8.0).contains(v)),
+        collapsed_orphans: table
+            .get("collapsed_orphans")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        collapsed_protected: table
+            .get("collapsed_protected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    }
+}
+
+fn save_persisted_state(s: &PersistedGuiState) -> std::io::Result<()> {
     let path = gui_state_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut table = toml::Table::new();
-    table.insert("zoom_factor".into(), toml::Value::Float(z as f64));
+    if let Some(z) = s.zoom_factor {
+        table.insert("zoom_factor".into(), toml::Value::Float(z as f64));
+    }
+    table.insert(
+        "collapsed_orphans".into(),
+        toml::Value::Boolean(s.collapsed_orphans),
+    );
+    table.insert(
+        "collapsed_protected".into(),
+        toml::Value::Boolean(s.collapsed_protected),
+    );
     std::fs::write(path, toml::to_string_pretty(&table).unwrap_or_default())
 }
 
@@ -100,11 +181,12 @@ struct App {
     /// canonical preset name. Only entries actively being edited live here.
     preset_name_drafts: BTreeMap<String, String>,
     scale_settled: bool,
-    last_persisted_zoom: f32,
+    persisted: PersistedGuiState,
 }
 
 impl App {
     fn new() -> Self {
+        let persisted = load_persisted_state();
         let mut me = Self {
             server: None,
             draft: None,
@@ -114,7 +196,7 @@ impl App {
             preset_edit_mode: PresetEditMode::Simple,
             preset_name_drafts: BTreeMap::new(),
             scale_settled: false,
-            last_persisted_zoom: 1.0,
+            persisted,
         };
         me.poll();
         me
@@ -188,20 +270,25 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.scale_settled {
             self.scale_settled = true;
-            if load_persisted_zoom().is_none() {
+            if self.persisted.zoom_factor.is_none() {
                 let want = detect_native_zoom(ctx);
                 if (want - ctx.zoom_factor()).abs() > 0.01 {
                     ctx.set_zoom_factor(want);
                 }
             }
-            self.last_persisted_zoom = ctx.zoom_factor();
+            self.persisted.zoom_factor = Some(ctx.zoom_factor());
         }
 
         let current_zoom = ctx.zoom_factor();
-        if (current_zoom - self.last_persisted_zoom).abs() > 0.001 {
-            self.last_persisted_zoom = current_zoom;
-            if let Err(e) = save_persisted_zoom(current_zoom) {
-                log::warn!("could not persist gui zoom: {e}");
+        if self
+            .persisted
+            .zoom_factor
+            .map(|z| (current_zoom - z).abs() > 0.001)
+            .unwrap_or(true)
+        {
+            self.persisted.zoom_factor = Some(current_zoom);
+            if let Err(e) = save_persisted_state(&self.persisted) {
+                log::warn!("could not persist gui state: {e}");
             }
         }
 
@@ -323,6 +410,11 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
+        let collapsed_before = (
+            self.persisted.collapsed_orphans,
+            self.persisted.collapsed_protected,
+        );
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.draft.is_none() {
                 ui.centered_and_justified(|ui| {
@@ -334,19 +426,41 @@ impl eframe::App for App {
                 let view = self.view;
                 let preset_mode = &mut self.preset_edit_mode;
                 let drafts = &mut self.preset_name_drafts;
+                let collapsed_orphans = &mut self.persisted.collapsed_orphans;
+                let collapsed_protected = &mut self.persisted.collapsed_protected;
                 let draft_ref = self.draft.as_mut().unwrap();
                 match view {
-                    View::Apps => draw_app_list(ui, draft_ref),
+                    View::Apps => draw_app_list(
+                        ui,
+                        draft_ref,
+                        collapsed_orphans,
+                        collapsed_protected,
+                    ),
                     View::Presets => {
                         draw_preset_editor(ui, &mut draft_ref.config, preset_mode, drafts)
                     }
                 }
             });
         });
+
+        let collapsed_after = (
+            self.persisted.collapsed_orphans,
+            self.persisted.collapsed_protected,
+        );
+        if collapsed_after != collapsed_before {
+            if let Err(e) = save_persisted_state(&self.persisted) {
+                log::warn!("could not persist gui state: {e}");
+            }
+        }
     }
 }
 
-fn draw_app_list(ui: &mut egui::Ui, draft: &mut DaemonState) {
+fn draw_app_list(
+    ui: &mut egui::Ui,
+    draft: &mut DaemonState,
+    collapsed_orphans: &mut bool,
+    collapsed_protected: &mut bool,
+) {
     use std::collections::BTreeSet;
 
     let presets: BTreeSet<String> = draft.config.modes.keys().cloned().collect();
@@ -486,12 +600,19 @@ fn draw_app_list(ui: &mut egui::Ui, draft: &mut DaemonState) {
         ui.add_space(4.0);
     }
 
-    draw_system_sections(ui, &draft.system_units);
+    draw_system_sections(ui, &draft.system_units, collapsed_orphans, collapsed_protected);
 }
 
 /// Render "Apps without windows" and "Desktop environment (protected)"
-/// sections below the Niri-tracked app list.
-fn draw_system_sections(ui: &mut egui::Ui, units: &[SystemUnitInfo]) {
+/// sections below the Niri-tracked app list. Each section has a clickable
+/// header that toggles a caller-owned collapsed flag (persisted in
+/// `gui_state.toml`), so the user can hide whichever group clutters their view.
+fn draw_system_sections(
+    ui: &mut egui::Ui,
+    units: &[SystemUnitInfo],
+    collapsed_orphans: &mut bool,
+    collapsed_protected: &mut bool,
+) {
     let mut orphans: Vec<&SystemUnitInfo> = Vec::new();
     let mut protected: Vec<&SystemUnitInfo> = Vec::new();
     for u in units {
@@ -505,34 +626,56 @@ fn draw_system_sections(ui: &mut egui::Ui, units: &[SystemUnitInfo]) {
     if !orphans.is_empty() {
         ui.add_space(6.0);
         ui.separator();
-        ui.label(
-            RichText::new(format!("— Apps without windows ({}) —", orphans.len()))
-                .weak()
-                .strong(),
+        collapsible_section_header(
+            ui,
+            &format!("Apps without windows ({})", orphans.len()),
+            collapsed_orphans,
         );
-        for u in orphans {
-            draw_system_unit_card(ui, u, "orphan", Color32::from_rgb(150, 150, 150));
+        if !*collapsed_orphans {
+            for u in orphans {
+                draw_system_unit_card(ui, u, "orphan", Color32::from_rgb(150, 150, 150));
+            }
         }
     }
 
     if !protected.is_empty() {
         ui.add_space(6.0);
         ui.separator();
-        ui.label(
-            RichText::new(format!(
-                "— Desktop environment (protected, {}) —",
-                protected.len()
-            ))
-            .weak()
-            .strong(),
+        collapsible_section_header(
+            ui,
+            &format!("Desktop environment (protected, {})", protected.len()),
+            collapsed_protected,
         );
-        for u in protected {
-            let label = match &u.category {
-                SystemUnitCategory::Protected { reason } => format!("protected: {reason}"),
-                _ => "protected".to_string(),
-            };
-            draw_system_unit_card(ui, u, &label, Color32::from_rgb(120, 160, 220));
+        if !*collapsed_protected {
+            for u in protected {
+                let label = match &u.category {
+                    SystemUnitCategory::Protected { reason } => format!("protected: {reason}"),
+                    _ => "protected".to_string(),
+                };
+                draw_system_unit_card(ui, u, &label, Color32::from_rgb(120, 160, 220));
+            }
         }
+    }
+}
+
+fn collapsible_section_header(ui: &mut egui::Ui, title: &str, collapsed: &mut bool) {
+    let arrow = if *collapsed { "▶" } else { "▼" };
+    let resp = ui
+        .add(
+            egui::Label::new(
+                RichText::new(format!("{arrow}  — {title} —"))
+                    .weak()
+                    .strong(),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_text(if *collapsed {
+            "Click to expand"
+        } else {
+            "Click to collapse"
+        });
+    if resp.clicked() {
+        *collapsed = !*collapsed;
     }
 }
 

@@ -398,7 +398,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Bootstrap snapshot from niri (may fail; that's fine, the event-stream
     // will catch us up).
     match niri::fetch_windows() {
-        Ok(ws) => {
+        Ok(mut ws) => {
+            ws.retain(|w| w.app_id != crate::SELF_APP_ID);
             log::info!("bootstrap: {} window(s)", ws.len());
             state.apply_snapshot(ws);
         }
@@ -492,12 +493,16 @@ fn handle_clipboard_event(state: &mut State, ev: clipboard::ClipboardEvent, conf
 
 fn handle_niri_event(state: &mut State, ev: niri::Event, config: &Config) {
     match ev {
-        niri::Event::Snapshot(ws) => {
+        niri::Event::Snapshot(mut ws) => {
+            ws.retain(|w| w.app_id != crate::SELF_APP_ID);
             log::debug!("snapshot: {} window(s)", ws.len());
             state.apply_snapshot(ws);
             state.reconcile(config);
         }
         niri::Event::Upsert(w) => {
+            if w.app_id == crate::SELF_APP_ID {
+                return;
+            }
             log::trace!("upsert: id={} app_id={} focused={}", w.id, w.app_id, w.is_focused);
             let app_id = w.app_id.clone();
             state.upsert_window(w);
