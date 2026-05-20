@@ -36,6 +36,10 @@ Works on any modern Linux with systemd ≥ 246 and cgroup v2.
   (e.g. Firefox opened via xdg-open from a notification).
 - A small GUI lets you switch the global mode, exclude apps, and pin per-app
   rules. A CLI subcommand mirrors the same for keybinds.
+- An optional **TDP tab** writes Intel RAPL PL1/PL2 power limits — keep the
+  CPU at a sustained 5–15 W to quiet down the fan when you don't need full
+  turbo. Installs its root helper through a single pkexec prompt; no
+  separate config file.
 - On shutdown, every scope it touched is reset to system defaults.
 
 ## Status
@@ -50,6 +54,9 @@ welcome.
 - **cgroup v2** as the unified hierarchy (default on Arch, Fedora 32+, Ubuntu 21.10+, Debian 12+, etc.)
 - **Niri** with `niri msg --json event-stream` (verified on 26.04)
 - Wayland session
+- For the optional TDP tab: an **Intel CPU** with `intel-rapl` in
+  `/sys/class/powercap/`, plus a polkit authentication agent running in the
+  session (e.g. `hyprpolkitagent`, `polkit-gnome`, `lxqt-policykit`)
 
 ## Install
 
@@ -170,6 +177,57 @@ override = "use_mode"              # follow active_mode (default)
 
 You can also edit these from the GUI's per-app card.
 
+## TDP control
+
+The **TDP** tab in the GUI exposes Intel RAPL power limits — two sliders
+(PL1 sustained, PL2 burst), live CPU temperature, live wattage, and an
+Apply button. Lower PL1 ⇒ lower sustained heat ⇒ quieter fan; raise PL2 if
+you still want short bursts to feel snappy.
+
+Quick mental model:
+
+- **PL1** caps a moving average over ~28 s. Sustained workloads (compile,
+  encode) settle to this number.
+- **PL2** caps short (~2.4 ms) bursts. Short tasks (open a tab, run a
+  command) can spike up to this.
+- Setting PL1 = 0 disables the long-term constraint; PL2 then acts as the
+  only cap until thermal throttling kicks in.
+
+OEM defaults on most laptops put PL1 = PL2 = nameplate TDP (e.g. 28 W or
+40 W); the fan ramps accordingly. Dropping to PL1 = 15 W is usually
+inaudible for browsing/coding workloads on recent Intel chips.
+
+### One-time setup
+
+The first visit to the TDP tab shows a blue **Set up TDP control** card
+with one button. Click it; a polkit dialog appears once. With your
+password it installs:
+
+- a root-owned copy of the main binary at `/usr/local/bin/nbk-set-rapl`
+  (multi-call dispatch — same binary, different name)
+- a polkit policy at `/usr/share/polkit-1/actions/...set-rapl.policy`
+  granting pkexec access to that helper with `auth_admin_keep` (5-min
+  password cache)
+- a udev rule at `/etc/udev/rules.d/60-intel-rapl-energy.rules` opening
+  `energy_uj` to the `wheel` group so the live wattage readout works
+  without root
+
+If no polkit authentication agent is running in your Niri session, the
+TDP tab shows a yellow banner with the install command for
+`hyprpolkitagent`. Without an agent neither install nor Apply can show a
+password prompt.
+
+Limits reset to OEM on reboot — re-apply your preferred values after each
+boot, or wire up your own systemd unit if you want them persistent.
+
+### Caveats
+
+- Intel-only. AMD CPUs use a different power-management interface that
+  this tab does not touch yet.
+- After a `cargo install` or release upgrade, the `/usr/local/bin/nbk-set-rapl`
+  copy is the old version. Delete it manually and revisit the TDP tab to
+  reinstall — there's no in-GUI "reinstall helper" button yet.
+
 ## How it stays out of trouble
 
 - **Two-level protection.** A scope is skipped if either (a) the PID our
@@ -224,6 +282,13 @@ route to its own scope via DBus).
 - `$XDG_RUNTIME_DIR/niri-battery-keeper.sock` — IPC socket
   (line-delimited JSON; the GUI and CLI talk to the daemon through it)
 - `~/.config/systemd/user/niri-battery-keeper.service` — systemd user unit
+
+Installed by the TDP tab (only when you set up TDP control):
+
+- `/usr/local/bin/nbk-set-rapl` — root-owned helper (a copy of the main
+  binary; multi-call by argv[0])
+- `/usr/share/polkit-1/actions/org.niri-battery-keeper.set-rapl.policy`
+- `/etc/udev/rules.d/60-intel-rapl-energy.rules`
 
 ## License
 
