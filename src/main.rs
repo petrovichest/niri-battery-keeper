@@ -4,6 +4,7 @@ mod proto;
 mod daemon;
 mod gui;
 mod bootstrap;
+mod rapl_helper;
 
 use std::process::ExitCode;
 
@@ -26,6 +27,19 @@ fn print_usage() {
 }
 
 fn main() -> ExitCode {
+    // Multi-call dispatch: when invoked as `nbk-set-rapl` (the GUI-installed
+    // root-owned copy at /usr/local/bin/nbk-set-rapl), act as the privileged
+    // RAPL helper and skip the rest of main entirely — no logger setup, no
+    // daemon/gui imports paths reached.
+    let argv0 = std::env::args().next().unwrap_or_default();
+    let progname = std::path::Path::new(&argv0)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if progname == rapl_helper::HELPER_NAME {
+        return rapl_helper::run(std::env::args().skip(1).collect());
+    }
+
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
     )

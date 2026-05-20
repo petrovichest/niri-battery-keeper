@@ -1,3 +1,5 @@
+mod tdp;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -161,6 +163,7 @@ fn save_persisted_state(s: &PersistedGuiState) -> std::io::Result<()> {
 enum View {
     Apps,
     Presets,
+    Tdp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,6 +195,9 @@ struct App {
     install_status: Option<Result<String, String>>,
     /// Modal flag: is the "Remove service?" confirmation window open?
     show_remove_service_confirm: bool,
+    /// Per-session state for the TDP tab. Independent of the daemon — reads
+    /// RAPL/coretemp directly, writes via pkexec.
+    tdp: tdp::TdpState,
 }
 
 impl App {
@@ -210,6 +216,7 @@ impl App {
             service_installed: crate::bootstrap::is_installed(),
             install_status: None,
             show_remove_service_confirm: false,
+            tdp: tdp::TdpState::new(),
         };
         me.poll();
         me
@@ -463,6 +470,9 @@ impl eframe::App for App {
                 if ui.selectable_label(self.view == View::Presets, RichText::new("Presets").size(14.0)).clicked() {
                     self.view = View::Presets;
                 }
+                if ui.selectable_label(self.view == View::Tdp, RichText::new("TDP").size(14.0)).clicked() {
+                    self.view = View::Tdp;
+                }
             });
             ui.add_space(4.0);
         });
@@ -580,7 +590,19 @@ impl eframe::App for App {
             self.persisted.collapsed_protected,
         );
 
+        // Tab-level repaint pacing for live TDP readouts. Costs a frame/sec
+        // even on other tabs but keeps the code branch-free.
+        self.tdp.tick();
+
         egui::CentralPanel::default().show(ctx, |ui| {
+            // TDP tab is independent of the daemon — show it even when the
+            // daemon socket is unreachable.
+            if self.view == View::Tdp {
+                ScrollArea::vertical().show(ui, |ui| {
+                    self.tdp.draw(ui);
+                });
+                return;
+            }
             if self.draft.is_none() {
                 ui.centered_and_justified(|ui| {
                     ui.label("Connecting to daemon…");
@@ -604,6 +626,7 @@ impl eframe::App for App {
                     View::Presets => {
                         draw_preset_editor(ui, &mut draft_ref.config, preset_mode, drafts)
                     }
+                    View::Tdp => unreachable!("TDP tab handled above"),
                 }
             });
         });

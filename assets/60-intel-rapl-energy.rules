@@ -1,0 +1,7 @@
+# Allow members of the wheel group to read Intel RAPL energy counters so
+# userland power monitors (powertop, turbostat, niri-battery-keeper) can
+# compute live wattage without root. Kernel restricts these to root by
+# default since CVE-2020-8694 (Platypus). On single-user systems where the
+# wheel group is already trusted with sudo, nothing extra is exposed.
+SUBSYSTEM=="powercap", ACTION=="add", \
+  RUN+="/bin/sh -c 'test -e /sys%p/energy_uj && chgrp wheel /sys%p/energy_uj && chmod g+r /sys%p/energy_uj || true'"

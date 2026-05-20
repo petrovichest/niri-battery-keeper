@@ -18,6 +18,17 @@ const BIN_NAME: &str = "niri-battery-keeper";
 /// bytes.
 const EMBEDDED_UNIT: &str = include_str!("../systemd/niri-battery-keeper.service");
 
+/// Files installed by the TDP "Install helper" GUI flow. Paths are baked
+/// into the embedded polkit policy below — keep these in sync.
+const TDP_HELPER_PATH: &str = "/usr/local/bin/nbk-set-rapl";
+const TDP_POLICY_PATH: &str =
+    "/usr/share/polkit-1/actions/org.niri-battery-keeper.set-rapl.policy";
+const TDP_UDEV_PATH: &str = "/etc/udev/rules.d/60-intel-rapl-energy.rules";
+
+const TDP_POLICY: &str =
+    include_str!("../assets/org.niri-battery-keeper.set-rapl.policy");
+const TDP_UDEV: &str = include_str!("../assets/60-intel-rapl-energy.rules");
+
 fn home() -> Result<PathBuf, Box<dyn Error>> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -181,5 +192,88 @@ pub fn remove_service() -> Result<(), Box<dyn Error>> {
     }
 
     systemctl_user_best_effort(&["daemon-reload"]);
+    Ok(())
+}
+
+/// One-shot GUI install of the TDP root-helper stack. Invokes
+/// `pkexec sh -c '…'` once; on success the user gets a working TDP tab
+/// with a single root-password prompt covering:
+///
+///   1. the helper binary (a root-owned copy of /proc/self/exe placed at
+///      [`TDP_HELPER_PATH`]; the multi-call dispatch in `main.rs` routes
+///      argv[0] = nbk-set-rapl to [`crate::rapl_helper::run`]);
+///   2. the polkit policy that allows pkexec to call the helper with
+///      `auth_admin_keep` so subsequent Apply clicks don't re-prompt;
+///   3. the udev rule that opens `energy_uj` to the wheel group so the
+///      GUI's live wattage readout can read the counter without root;
+///   4. udevadm reload + immediate chmod on existing RAPL nodes (the
+///      reload alone won't re-fire ACTION=="add" for already-bound nodes
+///      until next boot or hotplug).
+pub fn install_tdp() -> Result<(), Box<dyn Error>> {
+    // /proc/self/exe canonicalizes to the actual on-disk binary (typically
+    // ~/.local/bin/niri-battery-keeper after `install()`). Using current_exe()
+    // and not the symlink path keeps the install reproducible across the
+    // user's shell PATH quirks.
+    let src = std::env::current_exe()
+        .and_then(|p| std::fs::canonicalize(&p).or(Ok(p)))
+        .map_err(|e| format!("can't locate own executable: {e}"))?;
+    let src_str = src
+        .to_str()
+        .ok_or("own executable path is not UTF-8 — refusing to shell-escape")?;
+    if src_str.contains('\'') {
+        return Err(format!(
+            "own executable path contains a single quote ({src_str}); refusing"
+        )
+        .into());
+    }
+
+    let script = format!(
+        r#"set -e
+install -m 755 -o root -g root '{src}' '{helper}'
+cat > '{policy}' <<'NBK_POLICY_EOF'
+{policy_body}
+NBK_POLICY_EOF
+chmod 0644 '{policy}'
+cat > '{udev}' <<'NBK_UDEV_EOF'
+{udev_body}
+NBK_UDEV_EOF
+chmod 0644 '{udev}'
+udevadm control --reload-rules || true
+for f in /sys/class/powercap/intel-rapl:*/energy_uj; do
+    [ -e "$f" ] && chgrp wheel "$f" 2>/dev/null && chmod g+r "$f" 2>/dev/null || true
+done
+"#,
+        src = src_str,
+        helper = TDP_HELPER_PATH,
+        policy = TDP_POLICY_PATH,
+        policy_body = TDP_POLICY.trim_end(),
+        udev = TDP_UDEV_PATH,
+        udev_body = TDP_UDEV.trim_end(),
+    );
+
+    let out = Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("spawn pkexec: {e}"))?;
+
+    if !out.status.success() {
+        // pkexec exit codes: 126 user dismissed auth, 127 not authorized, 1
+        // command failure. Surface stderr so the GUI can show the real reason.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let code = out
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "?".into());
+        let msg = stderr.trim();
+        let detail = if msg.is_empty() {
+            String::new()
+        } else {
+            format!(": {msg}")
+        };
+        return Err(format!("pkexec exited {code}{detail}").into());
+    }
     Ok(())
 }
