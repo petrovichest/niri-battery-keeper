@@ -12,9 +12,7 @@ enable` step. Conversely, removing the binary should leave no zombie service.
 Done:
 
 - ~~**Embed the unit in the binary.**~~ `include_str!` in `src/bootstrap.rs`;
-  the binary now carries its own unit file. Release tarball still ships
-  `systemd/` for the manual-install path — drop it once the README leads with
-  `install`.
+  the binary now carries its own unit file.
 - ~~**`niri-battery-keeper install`.**~~ Copies `/proc/self/exe` →
   `~/.local/bin/niri-battery-keeper` (idempotent — skipped when already there),
   writes the embedded unit to
@@ -24,23 +22,30 @@ Done:
 - ~~**`niri-battery-keeper uninstall`.**~~ Best-effort `disable --now`,
   removes the unit and the binary copy. Leaves the config dir by default;
   `uninstall --purge` (or `-p`) wipes it too.
+- ~~**GUI auto-bootstrap.**~~ When the systemd user unit is missing, the GUI
+  shows a top banner with an "Install service" button that calls the same
+  `bootstrap::install()` path. Explicit-consent flavour rather than silent
+  install — surface what's about to mutate before mutating it.
+- ~~**README rewrite.**~~ "Install" section now leads with the self-bootstrap
+  flow (`curl … && chmod +x && ./niri-battery-keeper install`); the manual
+  `install -Dm755 …` recipe demoted to a "Manual install" appendix under
+  "Build from source".
+
+Dropped:
+
+- ~~**Daemon-side lifecycle check** (binary-at-canonical-path probe).~~
+  Redundant: `ExecStart=%h/.local/bin/niri-battery-keeper daemon` already
+  means systemd can't start the unit if the binary is gone, and a check
+  inside the daemon would only fire from `target/release/` development runs
+  where we don't want to fail. Cleanup is the `uninstall` subcommand's job.
 
 Still open:
 
-- **GUI auto-bootstrap.** If the GUI is launched and the service isn't
-  installed, prompt the user with a one-click "Install service" button (vs.
-  doing it silently — open question, decide when we implement).
-- **Service ↔ binary lifecycle.** The user's stated wish: "the service
-  shouldn't run without the app." Concrete behaviour is undecided. Options:
-  - Daemon checks on startup that `~/.local/bin/niri-battery-keeper` exists
-    and exits if not (so a moved/removed binary doesn't leave a stale unit
-    silently failing).
-  - On `uninstall`, fully clean up so this never happens.
-  - Pick one when we get there.
-- **README rewrite.** Lead the "Install" section with
-  `curl -L … -o niri-battery-keeper && chmod +x ./niri-battery-keeper &&
-  ./niri-battery-keeper install`; demote the manual `install -Dm755 …` flow
-  to a "from source" appendix.
+- **Drop `systemd/` from the release tarball.** Now that `install` ships
+  the unit embedded, the manual flow can read it out of
+  `target/release/niri-battery-keeper` (or skip it entirely). Pull the
+  directory out of the tarball workflow once we're confident no docs link
+  the manual path.
 
 ## Packaging / distribution
 

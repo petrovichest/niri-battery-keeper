@@ -34,6 +34,18 @@ fn unit_target() -> Result<PathBuf, Box<dyn Error>> {
     Ok(base.join("systemd").join("user").join(UNIT_FILE_NAME))
 }
 
+/// Cheap check: does the user-level systemd unit exist on disk?
+///
+/// Used by the GUI to decide whether to offer a one-click "Install service"
+/// prompt. A missing unit is the clearest "not installed yet" signal — a unit
+/// that exists but is masked/disabled is a deliberate user state we don't
+/// want to second-guess.
+pub fn is_installed() -> bool {
+    unit_target()
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
+
 /// Sanity-check that `systemctl --user` can reach a user manager. On
 /// non-systemd distros this prints a helpful error instead of dumping a
 /// cryptic systemctl message.

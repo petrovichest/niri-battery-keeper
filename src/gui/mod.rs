@@ -182,6 +182,13 @@ struct App {
     preset_name_drafts: BTreeMap<String, String>,
     scale_settled: bool,
     persisted: PersistedGuiState,
+    /// Cached result of [`crate::bootstrap::is_installed`]. We refresh this
+    /// alongside the daemon poll so the install card disappears once the
+    /// unit file lands.
+    service_installed: bool,
+    /// Outcome of the last "Install service" click, surfaced inline in the
+    /// install card. `None` until the user clicks the button at least once.
+    install_status: Option<Result<String, String>>,
 }
 
 impl App {
@@ -197,6 +204,8 @@ impl App {
             preset_name_drafts: BTreeMap::new(),
             scale_settled: false,
             persisted,
+            service_installed: crate::bootstrap::is_installed(),
+            install_status: None,
         };
         me.poll();
         me
@@ -204,6 +213,10 @@ impl App {
 
     fn poll(&mut self) {
         self.last_poll = Instant::now();
+        // Cheap stat; refreshed each poll so the install card disappears
+        // shortly after a successful install (or the unit being removed
+        // externally).
+        self.service_installed = crate::bootstrap::is_installed();
         match client::send(&Request::GetState) {
             Ok(Response::State(st)) => {
                 self.error = None;
@@ -283,6 +296,26 @@ impl App {
             }
             Err(e) => {
                 self.error = Some(format!("restart failed: {e}"));
+            }
+        }
+    }
+
+    /// Run `bootstrap::install()` from the GUI thread. Sub-second in the
+    /// happy path (a few `systemctl --user` calls); we accept the brief UI
+    /// stall in exchange for keeping the install state machine simple.
+    fn install_service(&mut self) {
+        match crate::bootstrap::install() {
+            Ok(()) => {
+                self.install_status = Some(Ok(
+                    "Service installed and started.".to_string()
+                ));
+                self.service_installed = true;
+                // Force the next poll immediately so the footer flips from
+                // "daemon not reachable" to "● running" without a 1-second pause.
+                self.last_poll = Instant::now() - Duration::from_secs(10);
+            }
+            Err(e) => {
+                self.install_status = Some(Err(e.to_string()));
             }
         }
     }
@@ -407,6 +440,57 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
         });
+
+        if !self.service_installed {
+            egui::TopBottomPanel::top("install_banner")
+                .frame(
+                    egui::Frame::default()
+                        .fill(Color32::from_rgb(35, 50, 70))
+                        .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new("niri-battery-keeper isn't installed as a systemd user service yet.")
+                            .color(Color32::WHITE)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Until you install it, the daemon won't start on login and \
+                             this window can't talk to it.",
+                        )
+                        .color(Color32::from_rgb(200, 210, 225))
+                        .small(),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let btn = egui::Button::new(
+                            RichText::new("Install service").color(Color32::WHITE).strong(),
+                        )
+                        .fill(Color32::from_rgb(60, 120, 200));
+                        if ui
+                            .add(btn)
+                            .on_hover_text(
+                                "Copies the binary into ~/.local/bin/, writes the systemd \
+                                 user unit, then runs daemon-reload + enable --now. \
+                                 Equivalent to running `niri-battery-keeper install` \
+                                 from the terminal.",
+                            )
+                            .clicked()
+                        {
+                            self.install_service();
+                        }
+                        if let Some(Err(msg)) = &self.install_status {
+                            ui.colored_label(
+                                Color32::from_rgb(255, 140, 140),
+                                format!("install failed: {msg}"),
+                            );
+                        } else if let Some(Ok(msg)) = &self.install_status {
+                            ui.colored_label(Color32::from_rgb(160, 230, 160), msg);
+                        }
+                    });
+                });
+        }
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_space(4.0);

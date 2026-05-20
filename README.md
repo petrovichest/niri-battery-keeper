@@ -51,30 +51,34 @@ welcome.
 - **Niri** with `niri msg --json event-stream` (verified on 26.04)
 - Wayland session
 
-## Install (from release)
+## Install
 
-Grab the latest x86_64 build — no Rust toolchain needed.
-
-```sh
-curl -L https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-x86_64-linux.tar.gz | tar xz
-cd niri-battery-keeper-*-x86_64-linux
-
-install -Dm755 niri-battery-keeper ~/.local/bin/niri-battery-keeper
-install -Dm644 systemd/niri-battery-keeper.service \
-               ~/.config/systemd/user/niri-battery-keeper.service
-systemctl --user daemon-reload
-systemctl --user enable --now niri-battery-keeper.service
-```
-
-Or, if you only want the binary and will write the unit yourself:
+Grab the latest x86_64 build and let it bootstrap itself — no Rust
+toolchain needed.
 
 ```sh
-curl -L -o ~/.local/bin/niri-battery-keeper \
+curl -L -o niri-battery-keeper \
   https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-x86_64-linux
-chmod +x ~/.local/bin/niri-battery-keeper
+chmod +x ./niri-battery-keeper
+./niri-battery-keeper install
 ```
 
-## Build from source
+`install` copies the binary into `~/.local/bin/`, writes the systemd user
+unit to `~/.config/systemd/user/niri-battery-keeper.service`, and runs
+`daemon-reload` + `enable --now`. Idempotent — re-running upgrades in place.
+
+To remove everything:
+
+```sh
+niri-battery-keeper uninstall            # leaves your config alone
+niri-battery-keeper uninstall --purge    # also wipes ~/.config/niri-battery-keeper/
+```
+
+Default config is written to `~/.config/niri-battery-keeper/config.toml` on
+first run. Mode defaults to **`off`** — the daemon does nothing until you
+switch modes via the GUI or the CLI.
+
+### Build from source
 
 Needs `rustc` 1.80+.
 
@@ -82,16 +86,20 @@ Needs `rustc` 1.80+.
 git clone https://github.com/petrovichest/niri-battery-keeper.git
 cd niri-battery-keeper
 cargo build --release
+./target/release/niri-battery-keeper install
+```
+
+### Manual install (no `install` subcommand)
+
+If you'd rather wire things up yourself:
+
+```sh
 install -Dm755 target/release/niri-battery-keeper ~/.local/bin/niri-battery-keeper
 install -Dm644 systemd/niri-battery-keeper.service \
                ~/.config/systemd/user/niri-battery-keeper.service
 systemctl --user daemon-reload
 systemctl --user enable --now niri-battery-keeper.service
 ```
-
-Default config is written to `~/.config/niri-battery-keeper/config.toml` on
-first run. Mode defaults to **`off`** — the daemon does nothing until you
-switch modes via the GUI or the CLI.
 
 ## Usage
 
@@ -104,6 +112,8 @@ niri-battery-keeper mode pause             # background apps: frozen (0% CPU)
 niri-battery-keeper mode off               # no restrictions
 niri-battery-keeper disable                # KILL SWITCH on — release every scope, stop applying anything
 niri-battery-keeper enable                 # KILL SWITCH off — resume normal operation
+niri-battery-keeper install                # copy self to ~/.local/bin, write unit, enable --now
+niri-battery-keeper uninstall [--purge]    # reverse install; --purge also drops the config dir
 ```
 
 Useful Niri keybinds (`~/.config/niri/config.kdl`):
