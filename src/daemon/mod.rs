@@ -67,9 +67,10 @@ struct State {
     throttler: Throttler,
     /// app_id of the current Wayland clipboard owner, if any. Updated each
     /// time the compositor reports a new selection: we mark whichever app
-    /// has keyboard focus at that moment as the owner. Owner scopes are
-    /// exempt from throttling / freezing, so paste never stalls waiting on
-    /// a CPU-starved or frozen source app.
+    /// has keyboard focus at that moment as the owner. The owner is exempt
+    /// from `Pause` (freezing it would deadlock Ctrl+V on the paste pipe),
+    /// but `Throttle` still applies — a CPU-quota'd source just answers
+    /// more slowly, it doesn't hang.
     clipboard_owner: Option<String>,
     /// Previous `cpu.stat:usage_usec` reading per scope, used to compute
     /// CPU% deltas between successive `snapshot_for_ipc` calls. Populated
@@ -197,6 +198,20 @@ impl State {
         }
     }
 
+    /// Resolve `app_id`'s configured profile and downgrade it for the
+    /// clipboard owner: `Pause` becomes "leave alone" (a frozen scope can't
+    /// respond to a paste pipe — Ctrl+V hangs forever), but `Throttle` is
+    /// kept as-is (a CPU-quota'd source is just slower to answer, not stuck).
+    fn effective_profile(&self, config: &Config, app_id: &str) -> Option<crate::config::Profile> {
+        let prof = config.resolve_profile(app_id)?;
+        if self.clipboard_owner.as_deref() == Some(app_id) {
+            if matches!(prof, crate::config::Profile::Pause) {
+                return None;
+            }
+        }
+        Some(prof)
+    }
+
     fn reconcile(&mut self, config: &Config) {
         let now = Instant::now();
         let grace = Duration::from_millis(config.policy.unfocus_grace_ms);
@@ -207,10 +222,9 @@ impl State {
                 let app = &self.apps[&app_id];
                 (app.focused, app.scopes.keys().cloned().collect())
             };
-            let profile = config.resolve_profile(&app_id);
-            let is_clipboard_owner = self.clipboard_owner.as_deref() == Some(app_id.as_str());
+            let profile = self.effective_profile(config, &app_id);
 
-            if focused || is_clipboard_owner || profile.is_none() {
+            if focused || profile.is_none() {
                 self.pending.remove(&app_id);
                 for scope in &scopes {
                     if self.throttler.is_throttled(scope) {
@@ -246,8 +260,7 @@ impl State {
                 None => continue,
             };
             if focused { continue; }
-            if self.clipboard_owner.as_deref() == Some(app_id.as_str()) { continue; }
-            let profile = match config.resolve_profile(&app_id) {
+            let profile = match self.effective_profile(config, &app_id) {
                 Some(p) => p, None => continue,
             };
             for scope in scopes {
