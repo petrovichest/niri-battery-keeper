@@ -56,6 +56,12 @@ pub struct AppGroupInfo {
     pub excluded: bool,
     pub any_throttled: bool,
     pub scopes: Vec<ScopeInfo>,
+    /// Live CPU usage of this app summed across its scopes, in "percent of one
+    /// core" (htop convention — a fully-busy 4-thread app reads ~400.0).
+    /// `None` on the first poll after the GUI opens, or when no sample
+    /// interval has elapsed yet.
+    #[serde(default)]
+    pub cpu_pct: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +77,9 @@ pub struct ScopeInfo {
     /// Niri-tracked apps share the same systemd scope (xdg-open case).
     #[serde(default)]
     pub shared: bool,
+    /// Live per-scope CPU%, same units as [`AppGroupInfo::cpu_pct`].
+    #[serde(default)]
+    pub cpu_pct: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

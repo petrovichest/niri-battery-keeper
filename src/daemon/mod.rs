@@ -71,6 +71,11 @@ struct State {
     /// exempt from throttling / freezing, so paste never stalls waiting on
     /// a CPU-starved or frozen source app.
     clipboard_owner: Option<String>,
+    /// Previous `cpu.stat:usage_usec` reading per scope, used to compute
+    /// CPU% deltas between successive `snapshot_for_ipc` calls. Populated
+    /// lazily — the very first poll after startup has no prior sample, so
+    /// the GUI shows `—`; from the next poll onward the delta is real.
+    cpu_prev: HashMap<String, (Instant, u64)>,
 }
 
 impl State {
@@ -260,7 +265,7 @@ impl State {
             .unwrap_or(Duration::from_secs(2))
     }
 
-    fn snapshot_for_ipc(&self, config: &Config) -> DaemonState {
+    fn snapshot_for_ipc(&mut self, config: &Config) -> DaemonState {
         let throttled = self.throttler.throttled_units();
         let throttled_set: HashSet<&String> = throttled.iter().collect();
 
@@ -270,6 +275,31 @@ impl State {
             .iter()
             .map(|u| (u.unit.as_str(), &u.limits))
             .collect();
+
+        // Per-scope CPU% via a delta against the previous snapshot. First
+        // call after startup (or for a freshly-appeared scope) yields None
+        // — the GUI renders "—" until the next poll. Counter going
+        // backwards means the scope was recreated under the same name;
+        // treat that as no sample for this round.
+        let now = Instant::now();
+        let mut cpu_pct_by_unit: HashMap<&str, f32> = HashMap::new();
+        let mut next_cpu_prev: HashMap<String, (Instant, u64)> =
+            HashMap::with_capacity(scanned.len());
+        for u in &scanned {
+            if let Some((prev_t, prev_usage)) = self.cpu_prev.get(&u.unit) {
+                let dt_us = now.duration_since(*prev_t).as_micros();
+                if dt_us > 0 && u.usage_usec >= *prev_usage {
+                    let d_usage = (u.usage_usec - *prev_usage) as u128;
+                    // pct of one core = (delta_usec / wall_delta_us) * 100
+                    let pct = (d_usage as f64 * 100.0) / dt_us as f64;
+                    cpu_pct_by_unit.insert(u.unit.as_str(), pct as f32);
+                }
+            }
+            next_cpu_prev.insert(u.unit.clone(), (now, u.usage_usec));
+        }
+        // Prune scopes that have disappeared by simply replacing the cache
+        // with this round's samples.
+        self.cpu_prev = next_cpu_prev;
 
         // unit name → list of app_ids that claim it (for [shared] detection)
         let mut owners_by_unit: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -313,9 +343,18 @@ impl State {
                     throttled: throttled_set.contains(name),
                     limits: limits_by_unit.get(name.as_str()).map(|l| to_proto_limits(l)),
                     shared,
+                    cpu_pct: cpu_pct_by_unit.get(name.as_str()).copied(),
                 }
             }).collect();
             scopes.sort_by(|a, b| a.unit.cmp(&b.unit));
+            // App-level CPU% is the sum of its scopes' CPU%. We only
+            // produce a number when *every* scope has a sample — mixing
+            // None and Some would understate the total and surprise users.
+            let cpu_pct = if scopes.is_empty() || scopes.iter().any(|s| s.cpu_pct.is_none()) {
+                None
+            } else {
+                Some(scopes.iter().map(|s| s.cpu_pct.unwrap_or(0.0)).sum())
+            };
             AppGroupInfo {
                 app_id: app_id.clone(),
                 window_count: app.windows.len(),
@@ -323,6 +362,7 @@ impl State {
                 excluded: profile.is_none(),
                 any_throttled: scopes.iter().any(|s| s.throttled),
                 scopes,
+                cpu_pct,
             }
         }).collect();
         apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));

@@ -735,9 +735,13 @@ fn draw_app_list(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let scope_count = app.scopes.len();
                     let total_pids: usize = app.scopes.iter().map(|s| s.pid_count).sum();
+                    let cpu_str = match app.cpu_pct {
+                        Some(p) => format!("{p:.1}% cpu"),
+                        None => "— cpu".to_string(),
+                    };
                     ui.label(
                         RichText::new(format!(
-                            "{} window(s) · {scope_count} scope(s) · {total_pids} pid(s)",
+                            "{cpu_str} · {} window(s) · {scope_count} scope(s) · {total_pids} pid(s)",
                             app.window_count
                         ))
                         .weak()
@@ -802,9 +806,13 @@ fn draw_app_list(
                             ui.horizontal(|ui| {
                                 ui.colored_label(color, state_text);
                                 let shared_tag = if s.shared { "  [shared]" } else { "" };
+                                let cpu_tag = match s.cpu_pct {
+                                    Some(p) => format!("  {p:.1}% cpu"),
+                                    None => "  — cpu".to_string(),
+                                };
                                 ui.label(
                                     RichText::new(format!(
-                                        "{}  ({} pid){shared_tag}",
+                                        "{}  ({} pid){cpu_tag}{shared_tag}",
                                         s.unit, s.pid_count
                                     ))
                                     .weak()

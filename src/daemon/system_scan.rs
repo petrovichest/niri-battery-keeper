@@ -17,6 +17,10 @@ pub struct ScannedUnit {
     pub unit: String,
     pub pids: Vec<i32>,
     pub limits: UnitLimits,
+    /// `usage_usec` from `cpu.stat` — monotonically increasing total CPU time
+    /// (microseconds, summed across cores) consumed by this scope. Sampled by
+    /// the snapshot path to compute per-scope CPU% deltas.
+    pub usage_usec: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,10 +95,12 @@ fn read_unit(name: &str, dir: &Path) -> ScannedUnit {
         io_weight: parse_weight(&read_file(dir, "io.weight")),
         frozen: read_file(dir, "cgroup.freeze").trim() == "1",
     };
+    let usage_usec = parse_cpu_stat_usage_usec(&read_file(dir, "cpu.stat"));
     ScannedUnit {
         unit: name.to_string(),
         pids,
         limits,
+        usage_usec,
     }
 }
 
@@ -138,6 +144,21 @@ pub fn parse_cpu_max(s: &str) -> String {
     } else {
         format!("{}%", pct.trunc() as u64 + 1)
     }
+}
+
+/// Parse `cpu.stat`'s `usage_usec` line — the first key in a multi-line
+/// `key value\n` file. Returns 0 on a missing/unreadable file (treated as
+/// "no sample" by the delta computation).
+pub fn parse_cpu_stat_usage_usec(s: &str) -> u64 {
+    for line in s.lines() {
+        let mut it = line.split_whitespace();
+        if it.next() == Some("usage_usec") {
+            if let Some(v) = it.next() {
+                return v.parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    0
 }
 
 /// Either a bare number (`cpu.weight`) or `"default <n>"` / `"<n>"` lines
@@ -200,6 +221,28 @@ mod tests {
     #[test]
     fn weight_missing() {
         assert_eq!(parse_weight(""), None);
+    }
+
+    #[test]
+    fn cpu_stat_usage_usec_present() {
+        let s = "usage_usec 123456789\nuser_usec 50000000\nsystem_usec 73456789\n";
+        assert_eq!(parse_cpu_stat_usage_usec(s), 123456789);
+    }
+
+    #[test]
+    fn cpu_stat_usage_usec_zero() {
+        assert_eq!(parse_cpu_stat_usage_usec("usage_usec 0\n"), 0);
+    }
+
+    #[test]
+    fn cpu_stat_missing_key() {
+        // No `usage_usec` line at all (shouldn't happen on cgroup-v2 but be defensive)
+        assert_eq!(parse_cpu_stat_usage_usec("user_usec 1\n"), 0);
+    }
+
+    #[test]
+    fn cpu_stat_empty() {
+        assert_eq!(parse_cpu_stat_usage_usec(""), 0);
     }
 
     #[test]
