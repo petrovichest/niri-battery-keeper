@@ -186,12 +186,20 @@ struct App {
     preset_name_drafts: BTreeMap<String, String>,
     scale_settled: bool,
     persisted: PersistedGuiState,
-    /// Cached result of [`crate::bootstrap::is_installed`]. We refresh this
-    /// alongside the daemon poll so the install card disappears once the
-    /// unit file lands.
+    /// Where does our own binary live on disk? Computed once at startup —
+    /// doesn't change while the app runs. Drives whether the install /
+    /// enable / remove banners and buttons are shown.
+    install_state: crate::bootstrap::InstallState,
+    /// Cached "is a unit file present anywhere we'd consider installed"
+    /// (user-level or system-level). Refreshed alongside the daemon poll
+    /// so the install card disappears once the unit lands.
     service_installed: bool,
-    /// Outcome of the last "Install service" click, surfaced inline in the
-    /// install card. `None` until the user clicks the button at least once.
+    /// Cached `systemctl --user is-enabled` result. Refreshed on poll so
+    /// the "Enable autostart" banner disappears once the user clicks the
+    /// button (or enables the unit out-of-band).
+    service_enabled: bool,
+    /// Outcome of the last "Install service" or "Enable autostart" click,
+    /// surfaced inline in the install card. `None` until first click.
     install_status: Option<Result<String, String>>,
     /// Modal flag: is the "Remove service?" confirmation window open?
     show_remove_service_confirm: bool,
@@ -213,7 +221,9 @@ impl App {
             preset_name_drafts: BTreeMap::new(),
             scale_settled: false,
             persisted,
-            service_installed: crate::bootstrap::is_installed(),
+            install_state: crate::bootstrap::installation_state(),
+            service_installed: any_unit_present(),
+            service_enabled: crate::bootstrap::is_unit_enabled(),
             install_status: None,
             show_remove_service_confirm: false,
             tdp: tdp::TdpState::new(),
@@ -224,10 +234,11 @@ impl App {
 
     fn poll(&mut self) {
         self.last_poll = Instant::now();
-        // Cheap stat; refreshed each poll so the install card disappears
-        // shortly after a successful install (or the unit being removed
-        // externally).
-        self.service_installed = crate::bootstrap::is_installed();
+        // Cheap stat + one systemctl call; refreshed each poll so the
+        // install/enable banner reacts to external state changes (e.g. a
+        // `pacman -S` or a `systemctl --user enable` in another terminal).
+        self.service_installed = any_unit_present();
+        self.service_enabled = crate::bootstrap::is_unit_enabled();
         match client::send(&Request::GetState) {
             Ok(Response::State(st)) => {
                 self.error = None;
@@ -321,8 +332,28 @@ impl App {
                     "Service installed and started.".to_string()
                 ));
                 self.service_installed = true;
+                self.service_enabled = true;
                 // Force the next poll immediately so the footer flips from
                 // "daemon not reachable" to "● running" without a 1-second pause.
+                self.last_poll = Instant::now() - Duration::from_secs(10);
+            }
+            Err(e) => {
+                self.install_status = Some(Err(e.to_string()));
+            }
+        }
+    }
+
+    /// Enable + start an already-present system unit. Used in the
+    /// [`InstallState::SystemInstalled`] case: the package manager owns
+    /// the unit file, we only flip enablement. No file writes.
+    fn enable_autostart(&mut self) {
+        match crate::bootstrap::enable_service() {
+            Ok(()) => {
+                self.install_status = Some(Ok(
+                    "Service enabled and started.".to_string()
+                ));
+                self.service_enabled = true;
+                self.service_installed = true;
                 self.last_poll = Instant::now() - Duration::from_secs(10);
             }
             Err(e) => {
@@ -339,7 +370,8 @@ impl App {
     fn remove_service(&mut self) {
         match crate::bootstrap::remove_service() {
             Ok(()) => {
-                self.service_installed = false;
+                self.service_installed = any_unit_present();
+                self.service_enabled = false;
                 // Park the install card in a clean state — the previous
                 // "Service installed and started." would look stale next to
                 // an "Install service" button.
@@ -352,6 +384,14 @@ impl App {
             }
         }
     }
+}
+
+/// Is there a systemd user unit anywhere we'd recognise as installed?
+/// Either the user-level path (`~/.config/systemd/user/...`) or the
+/// system-level path (`/usr/lib/systemd/user/...`) shipped by AUR / deb /
+/// rpm packages.
+fn any_unit_present() -> bool {
+    crate::bootstrap::is_installed() || crate::bootstrap::system_unit_present()
 }
 
 fn sync_runtime_into_draft(draft: &mut DaemonState, server: &DaemonState) {
@@ -477,54 +517,7 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
-        if !self.service_installed {
-            egui::TopBottomPanel::top("install_banner")
-                .frame(
-                    egui::Frame::default()
-                        .fill(Color32::from_rgb(35, 50, 70))
-                        .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
-                )
-                .show(ctx, |ui| {
-                    ui.label(
-                        RichText::new("niri-battery-keeper isn't installed as a systemd user service yet.")
-                            .color(Color32::WHITE)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "Until you install it, the daemon won't start on login and \
-                             this window can't talk to it.",
-                        )
-                        .color(Color32::from_rgb(200, 210, 225))
-                        .small(),
-                    );
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        let btn = egui::Button::new(
-                            RichText::new("Install service").color(Color32::WHITE).strong(),
-                        )
-                        .fill(Color32::from_rgb(60, 120, 200));
-                        if ui
-                            .add(btn)
-                            .on_hover_text(
-                                "Copies the binary into ~/.local/bin/, writes the systemd \
-                                 user unit, then runs daemon-reload + enable --now.",
-                            )
-                            .clicked()
-                        {
-                            self.install_service();
-                        }
-                        if let Some(Err(msg)) = &self.install_status {
-                            ui.colored_label(
-                                Color32::from_rgb(255, 140, 140),
-                                format!("install failed: {msg}"),
-                            );
-                        } else if let Some(Ok(msg)) = &self.install_status {
-                            ui.colored_label(Color32::from_rgb(160, 230, 160), msg);
-                        }
-                    });
-                });
-        }
+        self.draw_install_banner(ctx);
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -553,7 +546,15 @@ impl eframe::App for App {
                         self.discard();
                     }
                     ui.separator();
-                    if self.service_installed {
+                    // Only offer Remove when we own the unit at ~/.config/.
+                    // SystemInstalled means pacman/apt/dnf owns the file —
+                    // their job to remove. Detached means there's nothing
+                    // for us to remove yet.
+                    if matches!(
+                        self.install_state,
+                        crate::bootstrap::InstallState::UserInstalled
+                    ) && crate::bootstrap::is_installed()
+                    {
                         let remove_btn = egui::Button::new(
                             RichText::new("Remove service…").color(Color32::from_rgb(255, 200, 200)),
                         )
@@ -561,9 +562,9 @@ impl eframe::App for App {
                         if ui
                             .add(remove_btn)
                             .on_hover_text(
-                                "Stop the systemd user service and remove the unit file. \
-                                 Binary stays in ~/.local/bin/ so you can re-enable in one \
-                                 click. Asks for confirmation.",
+                                "Stop the systemd user service and remove the unit file, \
+                                 desktop entry, and icon. Binary stays in ~/.local/bin/ so \
+                                 you can re-enable in one click. Asks for confirmation.",
                             )
                             .clicked()
                         {
@@ -648,6 +649,125 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// One of three banners depending on [`InstallState`]:
+    ///
+    /// * `Detached` + no unit anywhere → "Install service" (writes binary
+    ///   to `~/.local/bin/`, unit + .desktop + icon).
+    /// * `SystemInstalled` + system unit present + not enabled → "Enable
+    ///   autostart" (just `systemctl --user enable --now`, no file writes).
+    /// * Otherwise no banner.
+    fn draw_install_banner(&mut self, ctx: &egui::Context) {
+        use crate::bootstrap::InstallState;
+        enum Banner {
+            Install,
+            EnableAutostart,
+            None,
+        }
+        let banner = match self.install_state {
+            InstallState::Detached if !self.service_installed => Banner::Install,
+            InstallState::SystemInstalled
+                if crate::bootstrap::system_unit_present() && !self.service_enabled =>
+            {
+                Banner::EnableAutostart
+            }
+            _ => Banner::None,
+        };
+        if matches!(banner, Banner::None) {
+            return;
+        }
+        egui::TopBottomPanel::top("install_banner")
+            .frame(
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(35, 50, 70))
+                    .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
+            )
+            .show(ctx, |ui| match banner {
+                Banner::Install => self.draw_install_banner_install(ui),
+                Banner::EnableAutostart => self.draw_install_banner_enable(ui),
+                Banner::None => {}
+            });
+    }
+
+    fn draw_install_banner_install(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("niri-battery-keeper isn't installed as a systemd user service yet.")
+                .color(Color32::WHITE)
+                .strong(),
+        );
+        ui.label(
+            RichText::new(
+                "Until you install it, the daemon won't start on login and \
+                 this window can't talk to it.",
+            )
+            .color(Color32::from_rgb(200, 210, 225))
+            .small(),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let btn = egui::Button::new(
+                RichText::new("Install service").color(Color32::WHITE).strong(),
+            )
+            .fill(Color32::from_rgb(60, 120, 200));
+            if ui
+                .add(btn)
+                .on_hover_text(
+                    "Copies the binary into ~/.local/bin/, writes the systemd \
+                     user unit, the desktop entry and icon, then runs \
+                     daemon-reload + enable --now.",
+                )
+                .clicked()
+            {
+                self.install_service();
+            }
+            self.draw_install_status_inline(ui);
+        });
+    }
+
+    fn draw_install_banner_enable(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("niri-battery-keeper is installed but not enabled.")
+                .color(Color32::WHITE)
+                .strong(),
+        );
+        ui.label(
+            RichText::new(
+                "The package shipped a systemd user unit, but autostart \
+                 isn't on. Enable it so the daemon comes up on login.",
+            )
+            .color(Color32::from_rgb(200, 210, 225))
+            .small(),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let btn = egui::Button::new(
+                RichText::new("Enable autostart").color(Color32::WHITE).strong(),
+            )
+            .fill(Color32::from_rgb(60, 120, 200));
+            if ui
+                .add(btn)
+                .on_hover_text(
+                    "systemctl --user enable --now niri-battery-keeper.service\n\
+                     No file writes — only flips the unit's enablement.",
+                )
+                .clicked()
+            {
+                self.enable_autostart();
+            }
+            self.draw_install_status_inline(ui);
+        });
+    }
+
+    fn draw_install_status_inline(&self, ui: &mut egui::Ui) {
+        if let Some(Err(msg)) = &self.install_status {
+            ui.colored_label(
+                Color32::from_rgb(255, 140, 140),
+                format!("failed: {msg}"),
+            );
+        } else if let Some(Ok(msg)) = &self.install_status {
+            ui.colored_label(Color32::from_rgb(160, 230, 160), msg);
+        }
+    }
+
     fn draw_remove_service_modal(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
         let mut open = self.show_remove_service_confirm;

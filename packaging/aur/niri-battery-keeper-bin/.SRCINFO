@@ -1,0 +1,25 @@
+pkgbase = niri-battery-keeper-bin
+	pkgdesc = Keeps battery on a Niri laptop by reining in background apps via systemd cgroups
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/petrovichest/niri-battery-keeper
+	arch = x86_64
+	license = MIT
+	depends = systemd
+	depends = wayland
+	depends = libxkbcommon
+	optdepends = polkit: for the TDP root-helper install flow from the GUI
+	optdepends = niri: required for the daemon to manage windows
+	provides = niri-battery-keeper
+	conflicts = niri-battery-keeper
+	conflicts = niri-battery-keeper-git
+	source = niri-battery-keeper-0.2.0.tar.gz::https://github.com/petrovichest/niri-battery-keeper/releases/download/v0.2.0/niri-battery-keeper-x86_64-linux.tar.gz
+	source = niri-battery-keeper.service::https://github.com/petrovichest/niri-battery-keeper/raw/v0.2.0/systemd/niri-battery-keeper.service
+	source = niri-battery-keeper.desktop::https://github.com/petrovichest/niri-battery-keeper/raw/v0.2.0/assets/niri-battery-keeper.desktop
+	source = niri-battery-keeper.svg::https://github.com/petrovichest/niri-battery-keeper/raw/v0.2.0/assets/niri-battery-keeper.svg
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = niri-battery-keeper-bin

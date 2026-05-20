@@ -28,3 +28,44 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# .deb package metadata for cargo-deb. Same .desktop / icon / unit files
+# the AUR PKGBUILD ships, just dropped under /usr/ by dpkg.
+[package.metadata.deb]
+maintainer = "petrovichest <caludesaul@pm.me>"
+copyright = "2026, petrovichest <caludesaul@pm.me>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Keeps battery on a Niri laptop by reining in background apps via systemd \
+cgroups. Provides a GUI for configuring per-app CPU and IO throttling \
+based on the active power source."""
+# $auto picks up glibc/libgcc; wayland-client + xkbcommon are dlopen'd by
+# eframe at runtime — dpkg-shlibdeps doesn't see them, so list manually.
+depends = "$auto, libwayland-client0, libxkbcommon0"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/niri-battery-keeper", "usr/bin/", "755"],
+    ["systemd/niri-battery-keeper.service", "usr/lib/systemd/user/", "644"],
+    ["assets/niri-battery-keeper.desktop", "usr/share/applications/", "644"],
+    ["assets/niri-battery-keeper.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["config.example.toml", "usr/share/doc/niri-battery-keeper/", "644"],
+    ["README.md", "usr/share/doc/niri-battery-keeper/", "644"],
+]
+
+# .rpm package metadata for cargo-generate-rpm. Mirrors the .deb layout
+# under the same /usr/ paths.
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "Keep battery on a Niri laptop by reining in background apps via systemd cgroups"
+assets = [
+    { source = "target/release/niri-battery-keeper", dest = "/usr/bin/niri-battery-keeper", mode = "755" },
+    { source = "systemd/niri-battery-keeper.service", dest = "/usr/lib/systemd/user/niri-battery-keeper.service", mode = "644" },
+    { source = "assets/niri-battery-keeper.desktop", dest = "/usr/share/applications/niri-battery-keeper.desktop", mode = "644" },
+    { source = "assets/niri-battery-keeper.svg", dest = "/usr/share/icons/hicolor/scalable/apps/niri-battery-keeper.svg", mode = "644" },
+    { source = "config.example.toml", dest = "/usr/share/doc/niri-battery-keeper/config.example.toml", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/niri-battery-keeper/LICENSE", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+systemd = "*"

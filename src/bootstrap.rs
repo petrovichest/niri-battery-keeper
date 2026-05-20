@@ -12,11 +12,26 @@ use std::process::Command;
 
 const UNIT_FILE_NAME: &str = "niri-battery-keeper.service";
 const BIN_NAME: &str = "niri-battery-keeper";
+const DESKTOP_FILE_NAME: &str = "niri-battery-keeper.desktop";
+const ICON_FILE_NAME: &str = "niri-battery-keeper.svg";
 
 /// Embedded copy of the systemd user unit. Single source of truth: the file
 /// on disk under `systemd/` and the one written by `install` are the same
 /// bytes.
 const EMBEDDED_UNIT: &str = include_str!("../systemd/niri-battery-keeper.service");
+
+/// Embedded `.desktop` entry and icon — same bytes are shipped by the AUR /
+/// deb / rpm packages under `/usr/share/`, and written by `install()` under
+/// `~/.local/share/` so the GUI shows up in the user's app menu after
+/// self-bootstrap.
+const EMBEDDED_DESKTOP: &str = include_str!("../assets/niri-battery-keeper.desktop");
+const EMBEDDED_ICON: &str = include_str!("../assets/niri-battery-keeper.svg");
+
+/// System install paths — checked to detect that the binary is managed by
+/// a package manager, and to spot a system-wide unit so we can offer
+/// "Enable autostart" without re-writing files we don't own.
+const SYSTEM_BIN_PREFIXES: &[&str] = &["/usr/bin/", "/usr/local/bin/"];
+const SYSTEM_UNIT_PATH: &str = "/usr/lib/systemd/user/niri-battery-keeper.service";
 
 /// Files installed by the TDP "Install helper" GUI flow. Paths are baked
 /// into the embedded polkit policy below — keep these in sync.
@@ -44,6 +59,92 @@ fn unit_target() -> Result<PathBuf, Box<dyn Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().unwrap_or_default().join(".config"));
     Ok(base.join("systemd").join("user").join(UNIT_FILE_NAME))
+}
+
+fn data_home() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().unwrap_or_default().join(".local").join("share")))
+}
+
+fn desktop_target() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(data_home()?.join("applications").join(DESKTOP_FILE_NAME))
+}
+
+fn icon_target() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(data_home()?
+        .join("icons")
+        .join("hicolor")
+        .join("scalable")
+        .join("apps")
+        .join(ICON_FILE_NAME))
+}
+
+/// Where is the running binary on disk? Drives the GUI's install-banner
+/// logic so a package-managed binary doesn't get shadowed by a stale copy
+/// in `~/.local/bin/` after the user clicks "Install service" by mistake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallState {
+    /// `/proc/self/exe` lives under `/usr/bin/` or `/usr/local/bin/` —
+    /// managed by a package manager (AUR, .deb, .rpm). The GUI should not
+    /// offer install/uninstall; if [`SYSTEM_UNIT_PATH`] exists but isn't
+    /// enabled, offer "Enable autostart" instead.
+    SystemInstalled,
+    /// Running from `~/.local/bin/niri-battery-keeper` — self-bootstrap
+    /// already done. GUI shows "Uninstall service".
+    UserInstalled,
+    /// Running from anywhere else (`target/release/`, `~/Downloads/`,
+    /// `/tmp/`). GUI shows "Install service".
+    Detached,
+}
+
+pub fn installation_state() -> InstallState {
+    let exe = match std::env::current_exe() {
+        Ok(p) => std::fs::canonicalize(&p).unwrap_or(p),
+        Err(_) => return InstallState::Detached,
+    };
+    let exe_str = exe.to_string_lossy();
+
+    if SYSTEM_BIN_PREFIXES.iter().any(|p| exe_str.starts_with(p)) {
+        return InstallState::SystemInstalled;
+    }
+
+    if let Ok(user_bin) = bin_target() {
+        let user_bin_canon = std::fs::canonicalize(&user_bin).unwrap_or(user_bin);
+        if exe == user_bin_canon {
+            return InstallState::UserInstalled;
+        }
+    }
+
+    InstallState::Detached
+}
+
+/// Does a system-wide unit file exist? Used together with
+/// [`InstallState::SystemInstalled`] to decide whether to offer
+/// "Enable autostart" — pointless if the package didn't ship a unit.
+pub fn system_unit_present() -> bool {
+    Path::new(SYSTEM_UNIT_PATH).exists()
+}
+
+/// Has the user enabled the unit? Cheap query — `systemctl --user
+/// is-enabled --quiet` returns 0 only when the unit is `enabled` or
+/// `static`. Used by the GUI to offer "Enable autostart" exactly when
+/// it's actually missing.
+pub fn is_unit_enabled() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-enabled", "--quiet", UNIT_FILE_NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Enable + start an already-present unit. For [`InstallState::SystemInstalled`]:
+/// the package manager owns the unit file, we only flip enablement.
+pub fn enable_service() -> Result<(), Box<dyn Error>> {
+    check_user_systemd()?;
+    systemctl_user(&["daemon-reload"])?;
+    systemctl_user(&["enable", "--now", UNIT_FILE_NAME])?;
+    Ok(())
 }
 
 /// Cheap check: does the user-level systemd unit exist on disk?
@@ -168,6 +269,24 @@ pub fn install() -> Result<(), Box<dyn Error>> {
         .map_err(|e| format!("writing {}: {e}", unit.display()))?;
     println!("installed unit   → {}", unit.display());
 
+    let desktop = desktop_target()?;
+    write_with_mode(&desktop, EMBEDDED_DESKTOP.as_bytes(), 0o644)
+        .map_err(|e| format!("writing {}: {e}", desktop.display()))?;
+    println!("installed desktop → {}", desktop.display());
+
+    let icon = icon_target()?;
+    write_with_mode(&icon, EMBEDDED_ICON.as_bytes(), 0o644)
+        .map_err(|e| format!("writing {}: {e}", icon.display()))?;
+    println!("installed icon   → {}", icon.display());
+
+    // Best-effort: refresh the desktop DB so menus pick up the new entry
+    // without waiting for a relogin. Missing on minimal installs — ignore.
+    if let Some(apps_dir) = desktop.parent() {
+        let _ = Command::new("update-desktop-database")
+            .arg(apps_dir)
+            .output();
+    }
+
     systemctl_user(&["daemon-reload"])?;
     systemctl_user(&["enable", "--now", UNIT_FILE_NAME])?;
     println!("enabled & started {UNIT_FILE_NAME}");
@@ -189,6 +308,20 @@ pub fn remove_service() -> Result<(), Box<dyn Error>> {
             println!("no unit at {} — skipping", unit.display());
         }
         Err(e) => return Err(format!("removing {}: {e}", unit.display()).into()),
+    }
+
+    for path in [desktop_target()?, icon_target()?] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => println!("removed {}", path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::debug!("removing {}: {e}", path.display()),
+        }
+    }
+
+    if let Some(apps_dir) = desktop_target()?.parent() {
+        let _ = Command::new("update-desktop-database")
+            .arg(apps_dir)
+            .output();
     }
 
     systemctl_user_best_effort(&["daemon-reload"]);

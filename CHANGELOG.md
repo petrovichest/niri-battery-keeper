@@ -5,6 +5,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AUR `-bin` package** (`yay -S niri-battery-keeper-bin`). PKGBUILD
+  pulls the published x86_64 binary and the unit/desktop/icon from the
+  matching git tag, installs to `/usr/bin/` + `/usr/lib/systemd/user/` +
+  `/usr/share/applications/` + `/usr/share/icons/hicolor/scalable/apps/`.
+  CI auto-pushes a new package version on every release tag.
+- **`.deb` and `.rpm` artifacts** on GitHub Releases. `cargo-deb` and
+  `cargo-generate-rpm` build them in CI alongside the bare binary;
+  install with `apt install ./niri-battery-keeper_*.deb` or
+  `dnf install ./niri-battery-keeper-*.rpm`.
+- **Application menu entry.** The bundled `.desktop` file and SVG icon
+  show "Niri Battery Keeper" in app menus and launchers. AUR / deb / rpm
+  ship them to `/usr/share/`; the bare-binary "Install service" flow
+  writes them to `~/.local/share/`.
+- **Auto-detect install state.** The GUI now inspects `/proc/self/exe`
+  on startup. When running from `/usr/bin/` it skips the "Install
+  service" banner entirely and offers "Enable autostart" only if the
+  package's unit is present but not enabled. Prevents stale copies in
+  `~/.local/bin/` when a package-managed binary gets upgraded.
+
+### Changed
+- Release builds now run on **ubuntu-22.04** (glibc 2.35) instead of
+  ubuntu-latest (24.04, glibc 2.39). The bare binary now runs on
+  Ubuntu 22.04+, Debian 12+, Fedora 36+ in addition to current Arch /
+  Fedora / Ubuntu LTS.
+
 ## [0.2.0] — 2026-05-20
 
 ### Added

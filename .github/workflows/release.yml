@@ -16,7 +16,13 @@ permissions:
 jobs:
   release:
     name: Build & publish release
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 → glibc 2.35 baseline so the bare binary runs on
+    # Ubuntu 22.04+, Debian 12+, Fedora 36+, Arch. ubuntu-latest (24.04,
+    # glibc 2.39) excludes the LTS audience.
+    runs-on: ubuntu-22.04
+    outputs:
+      ref: ${{ steps.tag.outputs.ref }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Resolve tag
         id: tag
@@ -60,6 +66,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      - name: Install packagers
+        run: |
+          cargo install --locked cargo-deb
+          cargo install --locked cargo-generate-rpm
+
       - name: Package artifacts
         id: pkg
         run: |
@@ -80,10 +91,30 @@ jobs:
           cp target/release/niri-battery-keeper "dist/${binary}"
           ( cd dist && sha256sum "${tarball}" > "${tarball}.sha256" )
           ( cd dist && sha256sum "${binary}" > "${binary}.sha256" )
+
+          # cargo-deb already runs strip via dpkg-deb; --no-build because we
+          # built above with --release. Output:
+          # target/debian/niri-battery-keeper_<ver>-1_amd64.deb
+          cargo deb --no-build --no-strip
+          deb_src=$(ls target/debian/*.deb | head -n1)
+          deb_name=$(basename "$deb_src")
+          cp "$deb_src" "dist/${deb_name}"
+          ( cd dist && sha256sum "${deb_name}" > "${deb_name}.sha256" )
+
+          cargo generate-rpm
+          rpm_src=$(ls target/generate-rpm/*.rpm | head -n1)
+          rpm_name=$(basename "$rpm_src")
+          cp "$rpm_src" "dist/${rpm_name}"
+          ( cd dist && sha256sum "${rpm_name}" > "${rpm_name}.sha256" )
+
           echo "tarball=dist/${tarball}" >> "$GITHUB_OUTPUT"
           echo "tarball_sha=dist/${tarball}.sha256" >> "$GITHUB_OUTPUT"
           echo "binary=dist/${binary}" >> "$GITHUB_OUTPUT"
           echo "binary_sha=dist/${binary}.sha256" >> "$GITHUB_OUTPUT"
+          echo "deb=dist/${deb_name}" >> "$GITHUB_OUTPUT"
+          echo "deb_sha=dist/${deb_name}.sha256" >> "$GITHUB_OUTPUT"
+          echo "rpm=dist/${rpm_name}" >> "$GITHUB_OUTPUT"
+          echo "rpm_sha=dist/${rpm_name}.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Extract release notes for this tag
         id: notes
@@ -115,20 +146,81 @@ jobs:
           case "$ref" in
             *-*) prerelease_flag="--prerelease" ;;
           esac
+          assets=(
+            "${{ steps.pkg.outputs.tarball }}"
+            "${{ steps.pkg.outputs.tarball_sha }}"
+            "${{ steps.pkg.outputs.binary }}"
+            "${{ steps.pkg.outputs.binary_sha }}"
+            "${{ steps.pkg.outputs.deb }}"
+            "${{ steps.pkg.outputs.deb_sha }}"
+            "${{ steps.pkg.outputs.rpm }}"
+            "${{ steps.pkg.outputs.rpm_sha }}"
+          )
           if gh release view "$ref" >/dev/null 2>&1; then
-            gh release upload "$ref" \
-              "${{ steps.pkg.outputs.tarball }}" \
-              "${{ steps.pkg.outputs.tarball_sha }}" \
-              "${{ steps.pkg.outputs.binary }}" \
-              "${{ steps.pkg.outputs.binary_sha }}" \
-              --clobber
+            gh release upload "$ref" "${assets[@]}" --clobber
           else
             gh release create "$ref" \
               --title "$ref" \
               --notes-file release-notes.md \
               $prerelease_flag \
-              "${{ steps.pkg.outputs.tarball }}" \
-              "${{ steps.pkg.outputs.tarball_sha }}" \
-              "${{ steps.pkg.outputs.binary }}" \
-              "${{ steps.pkg.outputs.binary_sha }}"
+              "${assets[@]}"
           fi
+
+  aur-publish:
+    name: Publish to AUR
+    runs-on: ubuntu-22.04
+    needs: [release]
+    # Skip AUR push for prereleases (tags with hyphen like v0.2.0-rc1).
+    # AUR users get only stable versions; prereleases stay on GitHub.
+    if: "!contains(needs.release.outputs.ref, '-')"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+
+      - name: Prepare AUR PKGBUILD
+        id: prep
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          REF: ${{ needs.release.outputs.ref }}
+        run: |
+          pkgbuild=packaging/aur/niri-battery-keeper-bin/PKGBUILD
+
+          # Wait for the GitHub Release asset to be reachable, then compute
+          # its sha256. The release job uploads moments before; CDN can lag.
+          tarball_url="https://github.com/${{ github.repository }}/releases/download/${REF}/niri-battery-keeper-x86_64-linux.tar.gz"
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$tarball_url" -o /tmp/tarball.tar.gz; then
+              break
+            fi
+            echo "tarball not yet reachable (attempt $attempt); sleeping..."
+            sleep 10
+          done
+          tarball_sha=$(sha256sum /tmp/tarball.tar.gz | cut -d' ' -f1)
+
+          # The other three sources are fetched by makepkg from
+          # ${url}/raw/${REF}/... which serves the files from this exact
+          # commit — so hashing the local copies matches what AUR users
+          # will receive.
+          unit_sha=$(sha256sum systemd/niri-battery-keeper.service | cut -d' ' -f1)
+          desktop_sha=$(sha256sum assets/niri-battery-keeper.desktop | cut -d' ' -f1)
+          svg_sha=$(sha256sum assets/niri-battery-keeper.svg | cut -d' ' -f1)
+
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "$pkgbuild"
+          sed -i "s/^pkgrel=.*/pkgrel=1/" "$pkgbuild"
+          sed -i "s/^sha256sums=.*/sha256sums=('${tarball_sha}' '${unit_sha}' '${desktop_sha}' '${svg_sha}')/" "$pkgbuild"
+
+          echo "=== PKGBUILD after substitution ==="
+          cat "$pkgbuild"
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: niri-battery-keeper-bin
+          pkgbuild: packaging/aur/niri-battery-keeper-bin/PKGBUILD
+          commit_username: petrovichest
+          commit_email: caludesaul@pm.me
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.release.outputs.ref }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519

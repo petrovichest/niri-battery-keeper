@@ -60,9 +60,43 @@ welcome.
 
 ## Install
 
-Grab the latest x86_64 build, mark it executable, run it. The first
-launch shows an "Install service" banner — one click writes the systemd
-user unit and starts the background daemon. No Rust toolchain needed.
+Every channel below ends with the same result: a working systemd user
+service, a "Niri Battery Keeper" entry in your application menu, and
+an icon you can pin to whatever launcher you use.
+
+### Arch / Manjaro / EndeavourOS
+
+```sh
+yay -S niri-battery-keeper-bin
+systemctl --user enable --now niri-battery-keeper.service
+```
+
+(Or use the GUI's **Enable autostart** button on first launch.)
+
+### Debian / Ubuntu / Mint
+
+```sh
+curl -LO https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper_0.2.0-1_amd64.deb
+sudo apt install ./niri-battery-keeper_0.2.0-1_amd64.deb
+systemctl --user enable --now niri-battery-keeper.service
+```
+
+(Adjust the version in the filename; check
+[Releases](https://github.com/petrovichest/niri-battery-keeper/releases/latest)
+for the current one.)
+
+### Fedora / openSUSE / RHEL
+
+```sh
+curl -LO https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-0.2.0-1.x86_64.rpm
+sudo dnf install ./niri-battery-keeper-0.2.0-1.x86_64.rpm
+systemctl --user enable --now niri-battery-keeper.service
+```
+
+### Other distros (bare binary fallback)
+
+For distros without one of the packages above (Gentoo, Void, Slackware,
+…) or just to try without installing:
 
 ```sh
 curl -L -o niri-battery-keeper \
@@ -71,15 +105,17 @@ chmod +x ./niri-battery-keeper
 ./niri-battery-keeper
 ```
 
-The "Install service" button copies the binary into `~/.local/bin/`,
-writes `~/.config/systemd/user/niri-battery-keeper.service`, and runs
-`daemon-reload` + `enable --now`. Idempotent — clicking it again upgrades
-in place.
+The first launch shows an "Install service" banner — one click copies
+the binary into `~/.local/bin/`, writes
+`~/.config/systemd/user/niri-battery-keeper.service`, drops a `.desktop`
+entry and icon into `~/.local/share/`, and runs `daemon-reload` +
+`enable --now`. Idempotent — clicking again upgrades in place.
 
-To remove the background service later, use the **Uninstall** button in
-the GUI. It stops and disables the unit and deletes the unit file. The
-binary in `~/.local/bin/` and your config in `~/.config/niri-battery-keeper/`
-stay put — wipe them by hand if you also want those gone.
+To remove the user-level install, use the **Remove service…** button
+in the GUI. It stops and disables the unit and deletes the unit file,
+desktop entry, and icon. The binary in `~/.local/bin/` and your config
+in `~/.config/niri-battery-keeper/` stay put — wipe them by hand if you
+also want those gone.
 
 Default config is written to `~/.config/niri-battery-keeper/config.toml` on
 first run. Mode defaults to **`off`** — the daemon does nothing until you
@@ -104,6 +140,10 @@ If you'd rather wire things up yourself, e.g. from a packaging script:
 install -Dm755 target/release/niri-battery-keeper ~/.local/bin/niri-battery-keeper
 install -Dm644 systemd/niri-battery-keeper.service \
                ~/.config/systemd/user/niri-battery-keeper.service
+install -Dm644 assets/niri-battery-keeper.desktop \
+               ~/.local/share/applications/niri-battery-keeper.desktop
+install -Dm644 assets/niri-battery-keeper.svg \
+               ~/.local/share/icons/hicolor/scalable/apps/niri-battery-keeper.svg
 systemctl --user daemon-reload
 systemctl --user enable --now niri-battery-keeper.service
 ```
@@ -282,6 +322,11 @@ route to its own scope via DBus).
 - `$XDG_RUNTIME_DIR/niri-battery-keeper.sock` — IPC socket
   (line-delimited JSON; the GUI and CLI talk to the daemon through it)
 - `~/.config/systemd/user/niri-battery-keeper.service` — systemd user unit
+  (`/usr/lib/systemd/user/...` when installed from a package)
+- `~/.local/share/applications/niri-battery-keeper.desktop` — menu entry
+  (`/usr/share/applications/...` when installed from a package)
+- `~/.local/share/icons/hicolor/scalable/apps/niri-battery-keeper.svg`
+  (`/usr/share/icons/...` when installed from a package)
 
 Installed by the TDP tab (only when you set up TDP control):
 

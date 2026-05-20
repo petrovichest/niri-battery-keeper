@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Niri Battery Keeper
+Comment=Rein in background apps to save battery on Niri laptops
+Exec=niri-battery-keeper
+Icon=niri-battery-keeper
+Categories=System;Utility;
+StartupNotify=true
+Terminal=false
+Keywords=battery;power;tdp;niri;

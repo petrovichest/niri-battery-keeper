@@ -60,48 +60,53 @@ Done in [Unreleased]:
 ## Packaging / distribution
 
 Goal: a user on any common distro should be able to install via the tool they
-already use — not by reading a README and running four shell commands. The
-bare-binary asset published today works but lands with no `+x`, an
-unwieldy name, and no systemd unit. Channels to support, ordered by audience
-fit:
+already use — not by reading a README and running four shell commands.
 
-- **AUR (Arch).** The natural home — Niri is Arch-leaning and the author runs
-  Arch. Three packages is the convention:
-  - `niri-battery-keeper-bin` — uses the pre-built release binary, fastest
-    install for end users (`yay -S niri-battery-keeper-bin`).
-  - `niri-battery-keeper` — builds from the latest release tarball with the
-    user's local Rust.
-  - `niri-battery-keeper-git` — tracks the `main` branch.
-    PKGBUILDs should `install -Dm755` the binary, drop the systemd unit into
-    `/usr/lib/systemd/user/`, and ship `config.example.toml` under
-    `/usr/share/doc/niri-battery-keeper/`. Worth extending the release workflow
-    to also bump the AUR PKGBUILDs (e.g. via a separate AUR repo and an SSH
-    push step in CI).
-- **AppImage.** Universal Linux single-file: ship `niri-battery-keeper.AppImage`
-  as a release asset. Build with `linuxdeploy` + `appimagetool` in CI; the
-  AppImage runtime handles the executable bit and double-click integration in
-  file managers. Caveat: the daemon writes a systemd user unit pointing at an
-  AppImage path that can move — needs to either bake an absolute path on
-  first launch or use `$APPIMAGE` env var.
-- **Nix flake.** NixOS users overlap heavily with the Niri crowd. A `flake.nix`
-  exposing `packages.x86_64-linux.default` (a Rust derivation) and a
-  `nixosModules.niri-battery-keeper` that wires the systemd user unit makes
-  `nix run github:petrovichest/niri-battery-keeper` and
+Done:
+
+- ~~**AUR `-bin` package.**~~ `yay -S niri-battery-keeper-bin`. PKGBUILD
+  in `packaging/aur/niri-battery-keeper-bin/`, CI auto-pushes on each
+  release tag using `KSXGitHub/github-actions-deploy-aur`. Requires
+  one-time setup of `AUR_SSH_PRIVATE_KEY` GitHub secret.
+- ~~**`.deb` artifact.**~~ `cargo-deb` builds in CI;
+  `apt install ./niri-battery-keeper_*.deb` works on Debian 12+ /
+  Ubuntu 22.04+ / Mint.
+- ~~**`.rpm` artifact.**~~ `cargo-generate-rpm` builds in CI;
+  `dnf install ./niri-battery-keeper-*.rpm` works on Fedora / openSUSE.
+- ~~**Desktop integration.**~~ `.desktop` + SVG icon shipped under
+  `/usr/share/` (packages) or `~/.local/share/` (bare-binary install).
+  All install paths now produce an app-menu entry.
+- ~~**Broaden glibc compat.**~~ Release builds run on `ubuntu-22.04`
+  (glibc 2.35) instead of `ubuntu-latest`.
+
+Still open:
+
+- **AUR source package** `niri-battery-keeper` — builds from the latest
+  release tarball with the user's local Rust. Less critical now that
+  `-bin` is live, but useful for source-purity audiences.
+- **AUR `-git` package** — tracks `main`. Trivial copy of `-bin` with
+  source pointing at the git repo and a `pkgver()` function for
+  `git describe` versioning.
+- **Nix flake.** NixOS users overlap heavily with the Niri crowd. A
+  `flake.nix` exposing `packages.x86_64-linux.default` (a Rust derivation)
+  and a `nixosModules.niri-battery-keeper` that wires the systemd user
+  unit makes `nix run github:petrovichest/niri-battery-keeper` and
   `services.niri-battery-keeper.enable = true;` work.
-- **`.deb` / `.rpm`** via `cargo-deb` and `cargo-generate-rpm`. Easy to add
-  to the release workflow alongside the existing tarball/binary, useful for
-  Debian/Ubuntu and Fedora users even without uploading to a PPA/COPR.
-- **`cargo install`.** Already works today (`cargo install --git …`) but
-  requires Rust. Document this as an option for the source-build path; if
-  we ever publish to crates.io it becomes `cargo install niri-battery-keeper`.
+- **AppImage.** Universal Linux single-file. Build with `linuxdeploy` +
+  `appimagetool` in CI; caveat: the unit writes a path that AppImages
+  rename across versions, so needs either `$APPIMAGE` env or path
+  rewrite on first launch.
+- **`cargo install`.** Already works (`cargo install --git …`) but
+  requires Rust. Documented as the source-build path.
+- **Drop bare-binary on Releases?** Reconsider once Nix flake lands —
+  with AUR + .deb + .rpm + Nix the bare binary is fallback for ≤5%
+  of users (Gentoo, Void, Slackware). Removing it would let us delete
+  most of `bootstrap.rs` and the install-banner code.
 
 Not pursuing (sandbox is fundamentally hostile to what this app does):
 
-- **Flatpak / Snap.** Both confine apps in ways that prevent talking to the
-  user's systemd, reading other apps' cgroups, or running `niri msg`.
-
-Once one of these channels is live, update README "Install" section to lead
-with it and demote the manual tarball steps.
+- **Flatpak / Snap.** Both confine apps in ways that prevent talking to
+  the user's systemd, reading other apps' cgroups, or running `niri msg`.
 
 ## Investigate footprint — RAM and binary size
 
