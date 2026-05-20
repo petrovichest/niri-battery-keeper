@@ -5,6 +5,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-20
+
+### Added
+- **TDP tab** in the GUI: PL1/PL2 sliders, live CPU temperature, live
+  wattage (delta of `intel-rapl` energy counters), and an Apply button.
+  Writes Intel RAPL power limits via a privileged helper invoked through
+  pkexec — useful for quieting the fan by capping sustained CPU power.
+  PL1 can be set to 0 to disable the long-term constraint and run with
+  PL2 as the sole cap.
+- **One-click TDP setup** via a single pkexec prompt. The GUI's
+  "Install TDP helper" button lays down all three system-level files at
+  once: a root-owned copy of the main binary at
+  `/usr/local/bin/nbk-set-rapl` (multi-call dispatch — same binary,
+  different name routes to the privileged code path), the polkit policy
+  at `/usr/share/polkit-1/actions/...set-rapl.policy` with
+  `auth_admin_keep` (5-min password cache), and a udev rule at
+  `/etc/udev/rules.d/60-intel-rapl-energy.rules` opening `energy_uj`
+  to the wheel group so the live wattage readout works without root.
+- Polkit-agent detection in the TDP tab. When no authentication agent
+  is running in the Niri session, a yellow banner appears with the
+  exact install command for `hyprpolkitagent`.
+
 ### Changed
 - GUI is now the only user-facing entry point. All CLI subcommands —
   `install`, `uninstall`, `mode`, `disable`, `enable`, `status` — were
@@ -70,6 +92,7 @@ First public release. Pre-1.0 / work in progress.
 - systemd user unit (`systemd/niri-battery-keeper.service`) running under
   `session.slice` so the daemon never throttles itself.
 
-[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/petrovichest/niri-battery-keeper/releases/tag/v0.1.0
