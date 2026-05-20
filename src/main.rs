@@ -1,4 +1,5 @@
 mod config;
+mod cputopo;
 mod proto;
 mod daemon;
 mod gui;

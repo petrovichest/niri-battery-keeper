@@ -38,11 +38,12 @@ impl Throttler {
                 log::debug!("throttle clear: unit={unit}");
                 return Ok(());
             }
-            Profile::Throttle { cpu_quota, cpu_weight, io_weight } => {
-                set_throttle(unit, &cpu_quota.0, *cpu_weight, *io_weight)?;
+            Profile::Throttle { cpu_quota, cpu_weight, io_weight, allowed_cpus } => {
+                set_throttle(unit, &cpu_quota.0, *cpu_weight, *io_weight, allowed_cpus.as_deref())?;
                 log::debug!(
-                    "throttle apply: unit={unit} cpu_quota={} cpu_weight={cpu_weight} io_weight={io_weight}",
-                    cpu_quota.0
+                    "throttle apply: unit={unit} cpu_quota={} cpu_weight={cpu_weight} io_weight={io_weight} allowed_cpus={}",
+                    cpu_quota.0,
+                    allowed_cpus.as_deref().unwrap_or("-")
                 );
             }
             Profile::Pause => {
@@ -95,12 +96,22 @@ impl Throttler {
     }
 }
 
-fn set_throttle(unit: &str, cpu_quota: &str, cpu_weight: u32, io_weight: u32) -> std::io::Result<()> {
+fn set_throttle(
+    unit: &str,
+    cpu_quota: &str,
+    cpu_weight: u32,
+    io_weight: u32,
+    allowed_cpus: Option<&str>,
+) -> std::io::Result<()> {
+    // `AllowedCPUs=<list>` pins the scope to a cpuset (E-cores only, etc.);
+    // an empty value tells systemd to unset, restoring "all CPUs".
+    let cpus = allowed_cpus.map(str::trim).unwrap_or("");
     run_systemctl(&[
         "--user", "set-property", "--runtime", unit,
         &format!("CPUQuota={cpu_quota}"),
         &format!("CPUWeight={cpu_weight}"),
         &format!("IOWeight={io_weight}"),
+        &format!("AllowedCPUs={cpus}"),
     ])
 }
 
@@ -108,7 +119,7 @@ fn set_throttle(unit: &str, cpu_quota: &str, cpu_weight: u32, io_weight: u32) ->
 fn clear_properties(unit: &str) -> std::io::Result<()> {
     run_systemctl(&[
         "--user", "set-property", "--runtime", unit,
-        "CPUQuota=", "CPUWeight=", "IOWeight=",
+        "CPUQuota=", "CPUWeight=", "IOWeight=", "AllowedCPUs=",
     ])
 }
 

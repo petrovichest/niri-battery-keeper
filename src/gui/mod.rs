@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 
 use crate::config::{AppRule, Config, CpuQuota, Profile};
+use crate::cputopo::{self, Topology};
 use crate::proto::{
     client, CgroupLimits, DaemonState, Request, Response, SystemUnitCategory, SystemUnitInfo,
 };
@@ -1031,7 +1032,11 @@ fn draw_preset_editor(
     ui.add_space(8.0);
 
     let is_simple = *mode == PresetEditMode::Simple;
-    let num_columns = if is_simple { 3 } else { 5 };
+    // Pin-CPUs column is only meaningful on hybrid CPUs (Intel P/E split).
+    // Detected once at startup.
+    let topo = cputopo::detect();
+    let show_pinning = !is_simple && topo.is_hybrid();
+    let num_columns = if is_simple { 3 } else if show_pinning { 6 } else { 5 };
 
     egui::Grid::new("presets-grid")
         .num_columns(num_columns)
@@ -1045,6 +1050,30 @@ fn draw_preset_editor(
                 ui.label(RichText::new("CPU %").strong());
                 ui.label(RichText::new("CPU Weight").strong());
                 ui.label(RichText::new("IO Weight").strong());
+                if show_pinning {
+                    let mut tip = String::from(
+                        "Restrict unfocused apps to a subset of CPU cores.\n\n\
+                         Modern Intel CPUs ship two types of cores:\n\
+                           • Performance cores — fast, hot, power-hungry.\n\
+                           • Efficient cores — slower, cool, sip power.\n\n\
+                         Pinning background apps to the efficient cluster lets \
+                         your performance cores idle (and clock down), which \
+                         cuts heat and extends battery life. The numbers in \
+                         brackets are logical CPU IDs as the kernel sees them \
+                         — e.g. 4-11 means CPUs 4 through 11.\n\n\
+                         Detected on this machine:"
+                    );
+                    if let Some(p) = &topo.p_cores {
+                        tip.push_str(&format!("\n  Performance: {p}"));
+                    }
+                    if let Some(e) = &topo.e_cores {
+                        tip.push_str(&format!("\n  Efficient: {e}"));
+                    }
+                    if let Some(lp) = &topo.lp_cores {
+                        tip.push_str(&format!("\n  Low-power: {lp}"));
+                    }
+                    ui.label(RichText::new("Run on").strong()).on_hover_text(tip);
+                }
             }
             ui.label("");
             ui.end_row();
@@ -1079,7 +1108,7 @@ fn draw_preset_editor(
                     }
                 }
 
-                let Some(Profile::Throttle { cpu_quota, cpu_weight, io_weight }) =
+                let Some(Profile::Throttle { cpu_quota, cpu_weight, io_weight, allowed_cpus }) =
                     config.modes.get_mut(&name)
                 else {
                     // Shouldn't happen — we filtered to Throttle above.
@@ -1107,6 +1136,9 @@ fn draw_preset_editor(
                     let mut iow = *io_weight as i32;
                     if ui.add(egui::DragValue::new(&mut iow).range(1..=10000)).changed() {
                         *io_weight = iow.max(1) as u32;
+                    }
+                    if show_pinning {
+                        draw_cpu_pin_cell(ui, &name, allowed_cpus, topo);
                     }
                 }
 
@@ -1150,6 +1182,7 @@ fn draw_preset_editor(
             cpu_quota: CpuQuota("50%".into()),
             cpu_weight: 50,
             io_weight: 50,
+            allowed_cpus: None,
         };
         let mut name = "custom".to_string();
         let mut n = 1;
@@ -1164,4 +1197,73 @@ fn draw_preset_editor(
 fn parse_pct(s: &str) -> Option<i32> {
     let trimmed = s.trim().trim_end_matches('%');
     trimmed.parse::<i32>().ok()
+}
+
+#[derive(Copy, Clone, PartialEq)]
+enum CpuPinChoice {
+    Any,
+    Efficient,
+    Performance,
+    Custom,
+}
+
+fn current_pin_choice(value: &Option<String>, topo: &Topology) -> CpuPinChoice {
+    match value.as_deref() {
+        None | Some("") => CpuPinChoice::Any,
+        Some(s) if topo.efficient().as_deref() == Some(s) => CpuPinChoice::Efficient,
+        Some(s) if topo.p_cores.as_deref() == Some(s) => CpuPinChoice::Performance,
+        _ => CpuPinChoice::Custom,
+    }
+}
+
+fn draw_cpu_pin_cell(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut Option<String>,
+    topo: &Topology,
+) {
+    let mut choice = current_pin_choice(value, topo);
+    // `Custom` is only ever produced by a hand-edited config — surface it as
+    // read-only selected_text so we don't silently clobber the user's value,
+    // but don't tempt them to pick it from the dropdown.
+    let selected = match choice {
+        CpuPinChoice::Any => "All cores",
+        CpuPinChoice::Efficient => "Efficient",
+        CpuPinChoice::Performance => "Performance",
+        CpuPinChoice::Custom => "Custom",
+    };
+    egui::ComboBox::from_id_salt(format!("cpupin-{id}"))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut choice, CpuPinChoice::Any, "All cores")
+                .on_hover_text("No pinning — kernel scheduler picks freely.");
+            if let Some(eff) = topo.efficient() {
+                ui.selectable_value(
+                    &mut choice,
+                    CpuPinChoice::Efficient,
+                    format!("Efficient cores  ({eff})"),
+                )
+                .on_hover_text(
+                    "Pin to E-cores (low power, cool). \
+                     Best for background apps you want quiet."
+                );
+            }
+            if let Some(p) = topo.p_cores.clone() {
+                ui.selectable_value(
+                    &mut choice,
+                    CpuPinChoice::Performance,
+                    format!("Performance cores  ({p})"),
+                )
+                .on_hover_text(
+                    "Pin to P-cores (fast, hot). \
+                     Rarely useful here — these are the cores you want free."
+                );
+            }
+        });
+    match choice {
+        CpuPinChoice::Any => *value = None,
+        CpuPinChoice::Efficient => *value = topo.efficient(),
+        CpuPinChoice::Performance => *value = topo.p_cores.clone(),
+        CpuPinChoice::Custom => {} // hand-edited config, leave intact
+    }
 }

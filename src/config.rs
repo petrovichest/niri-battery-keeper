@@ -36,6 +36,12 @@ pub enum Profile {
         cpu_weight: u32,
         /// 1..=10000. Systemd default 100.
         io_weight: u32,
+        /// Optional cpuset list ("4-11", "0-3,12-13", …) handed to systemd as
+        /// `AllowedCPUs=`. `None`/empty ⇒ no pinning (kernel scheduler is
+        /// free to pick any core). Used to corral unfocused apps onto
+        /// efficient cores on hybrid CPUs.
+        #[serde(default)]
+        allowed_cpus: Option<String>,
     },
     Pause,
 }
@@ -97,6 +103,7 @@ impl Default for Config {
                 cpu_quota: CpuQuota("5%".into()),
                 cpu_weight: 5,
                 io_weight: 5,
+                allowed_cpus: None,
             },
         );
         modes.insert("pause".into(), Profile::Pause);
