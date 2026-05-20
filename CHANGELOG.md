@@ -5,6 +5,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-20
+
 ### Added
 - **AUR `-bin` package** (`yay -S niri-battery-keeper-bin`). PKGBUILD
   pulls the published x86_64 binary and the unit/desktop/icon from the
@@ -118,7 +120,8 @@ First public release. Pre-1.0 / work in progress.
 - systemd user unit (`systemd/niri-battery-keeper.service`) running under
   `session.slice` so the daemon never throttles itself.
 
-[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/petrovichest/niri-battery-keeper/releases/tag/v0.1.0

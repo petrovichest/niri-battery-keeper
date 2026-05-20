@@ -1,7 +1,7 @@
 # Maintainer: petrovichest <caludesaul@pm.me>
 pkgname=niri-battery-keeper-bin
 _pkgname=niri-battery-keeper
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Keeps battery on a Niri laptop by reining in background apps via systemd cgroups"
 arch=('x86_64')
