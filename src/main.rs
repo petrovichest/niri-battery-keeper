@@ -2,6 +2,7 @@ mod config;
 mod proto;
 mod daemon;
 mod gui;
+mod bootstrap;
 
 use std::process::ExitCode;
 
@@ -22,6 +23,8 @@ fn print_usage() {
            niri-battery-keeper status         print daemon state and exit\n  \
            niri-battery-keeper disable        kill switch ON — release every scope, stop applying anything\n  \
            niri-battery-keeper enable         kill switch OFF — resume normal operation\n  \
+           niri-battery-keeper install        copy self into ~/.local/bin, write systemd unit, enable --now\n  \
+           niri-battery-keeper uninstall      reverse `install`; add --purge to also delete the config dir\n  \
            niri-battery-keeper --help         show this help"
     );
 }
@@ -41,6 +44,11 @@ fn main() -> ExitCode {
         [cmd, mode] if cmd == "mode" => proto::client::set_mode(mode),
         [cmd] if cmd == "disable" => proto::client::set_disabled(true),
         [cmd] if cmd == "enable" => proto::client::set_disabled(false),
+        [cmd] if cmd == "install" => bootstrap::install(),
+        [cmd] if cmd == "uninstall" => bootstrap::uninstall(false),
+        [cmd, flag] if cmd == "uninstall" && (flag == "--purge" || flag == "-p") => {
+            bootstrap::uninstall(true)
+        }
         [cmd] if cmd == "--help" || cmd == "-h" => {
             print_usage();
             return ExitCode::SUCCESS;
