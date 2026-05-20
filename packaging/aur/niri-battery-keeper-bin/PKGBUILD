@@ -1,7 +1,7 @@
 # Maintainer: petrovichest <caludesaul@pm.me>
 pkgname=niri-battery-keeper-bin
 _pkgname=niri-battery-keeper
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc="Keeps battery on a Niri laptop by reining in background apps via systemd cgroups"
 arch=('x86_64')
@@ -18,7 +18,7 @@ conflicts=("${_pkgname}" "${_pkgname}-git")
 # package always matches the binary version.
 source=(
     "${_pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/niri-battery-keeper-x86_64-linux.tar.gz"
-    "${_pkgname}.service::${url}/raw/v${pkgver}/systemd/niri-battery-keeper.service"
+    "${_pkgname}.service::${url}/raw/v${pkgver}/systemd/system/niri-battery-keeper.service"
     "${_pkgname}.desktop::${url}/raw/v${pkgver}/assets/niri-battery-keeper.desktop"
     "${_pkgname}.svg::${url}/raw/v${pkgver}/assets/niri-battery-keeper.svg"
 )

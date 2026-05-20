@@ -1,6 +1,6 @@
 [package]
 name = "niri-battery-keeper"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Keeps battery on a Niri laptop by reining in background apps via systemd cgroups"
 license = "MIT"
@@ -46,7 +46,7 @@ section = "utils"
 priority = "optional"
 assets = [
     ["target/release/niri-battery-keeper", "usr/bin/", "755"],
-    ["systemd/niri-battery-keeper.service", "usr/lib/systemd/user/", "644"],
+    ["systemd/system/niri-battery-keeper.service", "usr/lib/systemd/user/", "644"],
     ["assets/niri-battery-keeper.desktop", "usr/share/applications/", "644"],
     ["assets/niri-battery-keeper.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["config.example.toml", "usr/share/doc/niri-battery-keeper/", "644"],
@@ -60,7 +60,7 @@ license = "MIT"
 summary = "Keep battery on a Niri laptop by reining in background apps via systemd cgroups"
 assets = [
     { source = "target/release/niri-battery-keeper", dest = "/usr/bin/niri-battery-keeper", mode = "755" },
-    { source = "systemd/niri-battery-keeper.service", dest = "/usr/lib/systemd/user/niri-battery-keeper.service", mode = "644" },
+    { source = "systemd/system/niri-battery-keeper.service", dest = "/usr/lib/systemd/user/niri-battery-keeper.service", mode = "644" },
     { source = "assets/niri-battery-keeper.desktop", dest = "/usr/share/applications/niri-battery-keeper.desktop", mode = "644" },
     { source = "assets/niri-battery-keeper.svg", dest = "/usr/share/icons/hicolor/scalable/apps/niri-battery-keeper.svg", mode = "644" },
     { source = "config.example.toml", dest = "/usr/share/doc/niri-battery-keeper/config.example.toml", mode = "644" },

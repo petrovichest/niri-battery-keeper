@@ -203,7 +203,7 @@ jobs:
           # ${url}/raw/${REF}/... which serves the files from this exact
           # commit — so hashing the local copies matches what AUR users
           # will receive.
-          unit_sha=$(sha256sum systemd/niri-battery-keeper.service | cut -d' ' -f1)
+          unit_sha=$(sha256sum systemd/system/niri-battery-keeper.service | cut -d' ' -f1)
           desktop_sha=$(sha256sum assets/niri-battery-keeper.desktop | cut -d' ' -f1)
           svg_sha=$(sha256sum assets/niri-battery-keeper.svg | cut -d' ' -f1)
 

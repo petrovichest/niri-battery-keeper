@@ -5,6 +5,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-20
+
+### Fixed
+- **AUR / .deb / .rpm now actually start.** The packaged systemd unit
+  was the same byte stream the bare-binary install writes, which means
+  `ExecStart=%h/.local/bin/niri-battery-keeper daemon` — wrong for
+  packages that put the binary at `/usr/bin/`. systemd failed with
+  status 203/EXEC. The repo now ships a separate
+  `systemd/system/niri-battery-keeper.service` with the absolute path,
+  and the AUR PKGBUILD / cargo-deb / cargo-generate-rpm pull from it.
+- The GUI's "Enable autostart" button now runs `reset-failed` before
+  `enable --now`, so it works after an upgrade that fixed an
+  ExecStart bug (the previous failed attempts had left the unit in
+  start-limit-hit state).
+
 ## [0.3.0] — 2026-05-20
 
 ### Added
@@ -120,7 +135,8 @@ First public release. Pre-1.0 / work in progress.
 - systemd user unit (`systemd/niri-battery-keeper.service`) running under
   `session.slice` so the daemon never throttles itself.
 
-[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/petrovichest/niri-battery-keeper/compare/v0.1.0...v0.1.1

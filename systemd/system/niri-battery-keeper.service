@@ -1,0 +1,22 @@
+[Unit]
+Description=niri-battery-keeper daemon
+Documentation=https://github.com/petrovichest/niri-battery-keeper
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+
+[Service]
+Type=simple
+# System-installed binary (AUR / .deb / .rpm). The sibling
+# systemd/niri-battery-keeper.service uses %h/.local/bin/ and is what the
+# bare-binary "Install service" flow writes into ~/.config/systemd/user/.
+ExecStart=/usr/bin/niri-battery-keeper daemon
+Slice=session.slice
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+KillMode=mixed
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target

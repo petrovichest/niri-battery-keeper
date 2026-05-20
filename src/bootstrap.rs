@@ -140,9 +140,14 @@ pub fn is_unit_enabled() -> bool {
 
 /// Enable + start an already-present unit. For [`InstallState::SystemInstalled`]:
 /// the package manager owns the unit file, we only flip enablement.
+///
+/// `reset-failed` is best-effort: if the unit got stuck in start-limit-hit
+/// from earlier failed attempts (e.g. after a package upgrade that fixed
+/// a broken ExecStart), `enable --now` alone would refuse to start it.
 pub fn enable_service() -> Result<(), Box<dyn Error>> {
     check_user_systemd()?;
     systemctl_user(&["daemon-reload"])?;
+    systemctl_user_best_effort(&["reset-failed", UNIT_FILE_NAME]);
     systemctl_user(&["enable", "--now", UNIT_FILE_NAME])?;
     Ok(())
 }
