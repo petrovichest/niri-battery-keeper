@@ -105,34 +105,57 @@ with it and demote the manual tarball steps.
 
 ## Investigate footprint — RAM and binary size
 
-The release binary is ~5 MB stripped and the running process is around 80 MB
-RSS. Neither is alarming but both feel high for what this does (a focus
-listener + cgroup writer + small egui UI). Worth a profiling pass before 1.0.
+Measured 2026-05-20 (eframe 0.29, glow, wayland; release profile already at
+`opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`,
+`strip = true`):
 
-Open questions:
+| Process | RSS    | PSS    | Pss_Anon | Shared_Clean |
+|---------|--------|--------|----------|--------------|
+| daemon  | 6.4 MB | 2.5 MB | 1.0 MB   | 5.4 MB       |
+| GUI     | 100 MB | 32 MB  | 24 MB    | 76 MB        |
 
-- **Daemon vs. GUI RSS.** Measure each separately — `ps -o pid,rss,comm -C
-  niri-battery-keeper` while both run. 80 MB on the GUI is normal for an
-  egui+glow app (GL context, font atlas, textures). 80 MB on the *daemon*
-  would be surprising — it has no window — and worth digging into.
-- **Binary breakdown.** `cargo bloat --release --crates` will show which
-  dependencies dominate. Likely suspects: `eframe`/`egui` (~2–3 MB), `glow`
-  (OpenGL bindings), `wayland-client` + `wayland-protocols-wlr`. The release
-  profile is already aggressive (`opt-level = "z"`, `lto = "fat"`,
-  `codegen-units = 1`, `panic = "abort"`, `strip = true`) so further wins
-  come from cutting features, not flags.
-- **Daemon heap profile.** If daemon RSS is suspicious, `heaptrack
-  niri-battery-keeper daemon` (or `valgrind --tool=massif`) to see whether
-  it's `UnitCache` growing unbounded, serde_json buffering the entire niri
-  event stream, or process-tree scans not freeing.
+Binary (stripped): 5.5 MB total — `.text` 2.6 MB, `.rodata` ~2.5 MB
+(of which ~1 MB is `default_fonts`: Hack + Ubuntu-Light + NotoEmoji +
+emoji-icon-font).
 
-Potential trims (only if measurement justifies):
+Resolved findings:
 
-- Split the GUI behind a feature flag and ship a daemon-only binary for users
-  who never want the GUI. eframe/egui is most of the binary size.
-- Replace `serde_json` with hand-rolled parsing for the small niri event
-  schema (only a few message types).
-- Drop `default_fonts` in egui and ship a smaller font.
+- **The 80 MB worry was about the wrong number.** `ps`'s RSS double-counts
+  pages shared with other GL apps. The GUI's PSS is 32 MB (24 MB private
+  heap + ~8 MB its share of Mesa/libstdc++/etc.); the 75 MB Shared_Clean is
+  the Mesa GL stack (`libgallium`, `libLLVM`, `libicudata` via `libxml2`,
+  `libEGL_mesa`, `libdrm_amdgpu`+`libdrm_intel`) which is loaded once for
+  the whole system anyway. Any egui/eframe/glow app pays this.
+- **Daemon is fine.** 2.5 MB PSS, 1 MB anon. No leak hunt needed.
+- **Top crates by `.text`:** std 667 KB, winit 314 KB, egui 232 KB,
+  eframe 177 KB, niri_battery_keeper 118 KB, epaint 87 KB,
+  smithay_clipboard 85 KB, x11_dl 72 KB, ttf_parser 70 KB, toml_edit 70 KB,
+  x11rb_protocol 68 KB, egui_winit 60 KB, wayland_client 54 KB,
+  webbrowser 35 KB.
+
+Dropped trims:
+
+- ~~**Drop `x11` from eframe features.**~~ Tried; saved 160 bytes. `winit`
+  and `glutin-winit` have `x11` in their default features, so the X11 code
+  paths (`x11_dl`, `x11rb`, `arboard`'s X11 backend, winit's X11 platform)
+  stay in the binary even when eframe's `x11` feature is off. Removing them
+  would require forking eframe or `[patch.crates-io]` on glutin-winit/winit
+  to disable defaults — disproportionate for ~250 KB. The `x11 = false`
+  setting is kept in `Cargo.toml` as semantically correct: when the
+  upstream default-features situation improves, we get the win for free.
+- ~~**Drop `default_fonts`.**~~ Would save ~1 MB but breaks CollapsingHeader
+  arrows, checkmarks, and emoji fallback — egui ships glyph icons in
+  `emoji-icon-font`. Already paired with system symbol fonts (91b7a89);
+  losing the bundled set degrades UX.
+
+Still open (only if size becomes a real problem before 1.0):
+
+- **Replace `serde_json` with hand-rolled parsing** for the small niri
+  event schema. Estimated win: ~20–30 KB; risk: regressions in event
+  parsing. Not worth it at current sizes.
+- **Wait for eframe/winit upstream** to expose `default-features = false`
+  on `glutin-winit` (or for egui-winit to gate `arboard`/`webbrowser`/
+  X11 behind toggles). Then revisit and potentially save ~300–400 KB.
 
 ## Other ideas
 
