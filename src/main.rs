@@ -17,15 +17,10 @@ fn print_usage() {
     eprintln!(
         "niri-battery-keeper — focus-driven CPU/IO governor for unfocused apps on Niri\n\n\
          Usage:\n  \
-           niri-battery-keeper                run GUI\n  \
-           niri-battery-keeper daemon         run daemon (for systemd user service)\n  \
-           niri-battery-keeper mode <name>    switch global mode (off|minimal|pause|…)\n  \
-           niri-battery-keeper status         print daemon state and exit\n  \
-           niri-battery-keeper disable        kill switch ON — release every scope, stop applying anything\n  \
-           niri-battery-keeper enable         kill switch OFF — resume normal operation\n  \
-           niri-battery-keeper install        copy self into ~/.local/bin, write systemd unit, enable --now\n  \
-           niri-battery-keeper uninstall      reverse `install`; add --purge to also delete the config dir\n  \
-           niri-battery-keeper --help         show this help"
+           niri-battery-keeper          open the GUI\n  \
+           niri-battery-keeper daemon   run the background service (used by systemd)\n\n\
+         Everything else — install, mode switching, kill switch, uninstall —\n\
+         lives in the GUI."
     );
 }
 
@@ -40,15 +35,6 @@ fn main() -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = match args.as_slice() {
         [] => gui::run(),
         [cmd] if cmd == "daemon" => daemon::run(),
-        [cmd] if cmd == "status" => proto::client::print_status(),
-        [cmd, mode] if cmd == "mode" => proto::client::set_mode(mode),
-        [cmd] if cmd == "disable" => proto::client::set_disabled(true),
-        [cmd] if cmd == "enable" => proto::client::set_disabled(false),
-        [cmd] if cmd == "install" => bootstrap::install(),
-        [cmd] if cmd == "uninstall" => bootstrap::uninstall(false),
-        [cmd, flag] if cmd == "uninstall" && (flag == "--purge" || flag == "-p") => {
-            bootstrap::uninstall(true)
-        }
         [cmd] if cmd == "--help" || cmd == "-h" => {
             print_usage();
             return ExitCode::SUCCESS;

@@ -5,6 +5,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- GUI is now the only user-facing entry point. All CLI subcommands —
+  `install`, `uninstall`, `mode`, `disable`, `enable`, `status` — were
+  removed. Mode switching, kill switch, install/uninstall, status all
+  live in the GUI. The only remaining invocations are
+  `niri-battery-keeper` (opens GUI) and `niri-battery-keeper daemon`
+  (what the systemd unit runs).
+- Release tarball no longer ships a `systemd/` directory. The unit is
+  embedded in the binary and written to
+  `~/.config/systemd/user/niri-battery-keeper.service` by the GUI's
+  "Install service" button, so the duplicate copy in the tarball was
+  dead weight. Source builds still have `systemd/niri-battery-keeper.service`
+  in the repo for the manual-install path.
+
+### Removed
+- CLI subcommands `install`, `uninstall [--purge]`, `mode <name>`,
+  `disable`, `enable`, `status`. Niri keybind recipes that spawned
+  `niri-battery-keeper mode pause` etc. no longer work — bind the GUI
+  instead (`spawn "niri-battery-keeper";`).
+
 ## [0.1.1] — 2026-05-20
 
 ### Added

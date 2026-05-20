@@ -53,30 +53,30 @@ welcome.
 
 ## Install
 
-Grab the latest x86_64 build and let it bootstrap itself — no Rust
-toolchain needed.
+Grab the latest x86_64 build, mark it executable, run it. The first
+launch shows an "Install service" banner — one click writes the systemd
+user unit and starts the background daemon. No Rust toolchain needed.
 
 ```sh
 curl -L -o niri-battery-keeper \
   https://github.com/petrovichest/niri-battery-keeper/releases/latest/download/niri-battery-keeper-x86_64-linux
 chmod +x ./niri-battery-keeper
-./niri-battery-keeper install
+./niri-battery-keeper
 ```
 
-`install` copies the binary into `~/.local/bin/`, writes the systemd user
-unit to `~/.config/systemd/user/niri-battery-keeper.service`, and runs
-`daemon-reload` + `enable --now`. Idempotent — re-running upgrades in place.
+The "Install service" button copies the binary into `~/.local/bin/`,
+writes `~/.config/systemd/user/niri-battery-keeper.service`, and runs
+`daemon-reload` + `enable --now`. Idempotent — clicking it again upgrades
+in place.
 
-To remove everything:
-
-```sh
-niri-battery-keeper uninstall            # leaves your config alone
-niri-battery-keeper uninstall --purge    # also wipes ~/.config/niri-battery-keeper/
-```
+To remove the background service later, use the **Uninstall** button in
+the GUI. It stops and disables the unit and deletes the unit file. The
+binary in `~/.local/bin/` and your config in `~/.config/niri-battery-keeper/`
+stay put — wipe them by hand if you also want those gone.
 
 Default config is written to `~/.config/niri-battery-keeper/config.toml` on
 first run. Mode defaults to **`off`** — the daemon does nothing until you
-switch modes via the GUI or the CLI.
+pick a mode in the GUI.
 
 ### Build from source
 
@@ -86,12 +86,12 @@ Needs `rustc` 1.80+.
 git clone https://github.com/petrovichest/niri-battery-keeper.git
 cd niri-battery-keeper
 cargo build --release
-./target/release/niri-battery-keeper install
+./target/release/niri-battery-keeper          # launches GUI, click Install service
 ```
 
-### Manual install (no `install` subcommand)
+### Manual install (no GUI)
 
-If you'd rather wire things up yourself:
+If you'd rather wire things up yourself, e.g. from a packaging script:
 
 ```sh
 install -Dm755 target/release/niri-battery-keeper ~/.local/bin/niri-battery-keeper
@@ -103,37 +103,31 @@ systemctl --user enable --now niri-battery-keeper.service
 
 ## Usage
 
+Launch the GUI to do anything user-facing — pick a mode, toggle the kill
+switch, edit presets, set per-app overrides, install or uninstall the
+service. The binary itself only takes two invocations:
+
 ```sh
-niri-battery-keeper                        # open the GUI
-niri-battery-keeper daemon                 # what the systemd unit runs
-niri-battery-keeper status                 # print state and exit
-niri-battery-keeper mode minimal           # background apps: 5% CPU
-niri-battery-keeper mode pause             # background apps: frozen (0% CPU)
-niri-battery-keeper mode off               # no restrictions
-niri-battery-keeper disable                # KILL SWITCH on — release every scope, stop applying anything
-niri-battery-keeper enable                 # KILL SWITCH off — resume normal operation
-niri-battery-keeper install                # copy self to ~/.local/bin, write unit, enable --now
-niri-battery-keeper uninstall [--purge]    # reverse install; --purge also drops the config dir
+niri-battery-keeper          # open the GUI
+niri-battery-keeper daemon   # what the systemd unit runs (don't invoke directly)
 ```
 
-Useful Niri keybinds (`~/.config/niri/config.kdl`):
+Bind the GUI to a Niri keybind if you want one-key access
+(`~/.config/niri/config.kdl`):
 
 ```
-Mod+Shift+P { spawn "niri-battery-keeper" "mode" "pause"; }
-Mod+Shift+M { spawn "niri-battery-keeper" "mode" "minimal"; }
-Mod+Shift+O { spawn "niri-battery-keeper" "mode" "off"; }
-Mod+Shift+K { spawn "niri-battery-keeper" "disable"; }   # panic button
-Mod+Shift+J { spawn "niri-battery-keeper" "enable"; }
+Mod+Shift+B { spawn "niri-battery-keeper"; }
 ```
 
 ## Kill switch (panic button)
 
-`disable` is a global override that beats every other setting. When engaged
-it overrides `active_mode` AND every per-app `profile` / `use_mode` rule,
-unfreezes/clears every scope the daemon had touched, and stops applying new
-restrictions until you `enable` again. The daemon keeps running and tracking
-focus events, so re-enabling is instant. State persists in `config.toml`
-across daemon restarts.
+The **Kill switch** toggle at the top of the GUI is a global override that
+beats every other setting. When engaged it overrides `active_mode` AND
+every per-app `profile` / `use_mode` rule, unfreezes/clears every scope
+the daemon had touched, and stops applying new restrictions until you
+flip it back. The daemon keeps running and tracking focus events, so
+re-enabling is instant. State persists in `config.toml` across daemon
+restarts.
 
 Use this when you're experimenting with profiles and want a single
 reliable knob that guarantees the program has zero effect on your system.

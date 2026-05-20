@@ -327,7 +327,7 @@ impl App {
     /// Disables the systemd unit, removes the unit file, runs daemon-reload.
     /// Leaves the binary in `~/.local/bin/` so the GUI can stay open and
     /// re-install in one click. For a full wipe (binary + config) the user
-    /// drops to `niri-battery-keeper uninstall` from the terminal.
+    /// removes those files by hand — no CLI uninstall path any more.
     fn remove_service(&mut self) {
         match crate::bootstrap::remove_service() {
             Ok(()) => {
@@ -497,9 +497,7 @@ impl eframe::App for App {
                             .add(btn)
                             .on_hover_text(
                                 "Copies the binary into ~/.local/bin/, writes the systemd \
-                                 user unit, then runs daemon-reload + enable --now. \
-                                 Equivalent to running `niri-battery-keeper install` \
-                                 from the terminal.",
+                                 user unit, then runs daemon-reload + enable --now.",
                             )
                             .clicked()
                         {
@@ -652,9 +650,9 @@ impl App {
                 ui.label(
                     RichText::new(
                         "The binary stays in ~/.local/bin/ — re-enable any time via the \
-                         \"Install service\" banner that reappears, or by running \
-                         `niri-battery-keeper install` from a terminal. To wipe the binary \
-                         and config too, use `niri-battery-keeper uninstall --purge`.",
+                         \"Install service\" banner that reappears. To wipe the binary \
+                         and config too, remove ~/.local/bin/niri-battery-keeper and \
+                         ~/.config/niri-battery-keeper/ by hand.",
                     )
                     .weak()
                     .small(),

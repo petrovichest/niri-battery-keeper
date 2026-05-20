@@ -73,7 +73,8 @@ jobs:
           stage="dist/${folder}"
           mkdir -p "$stage"
           cp target/release/niri-battery-keeper "$stage/"
-          cp -r systemd "$stage/"
+          # systemd/ deliberately not copied — the unit is embedded in the
+          # binary (see src/bootstrap.rs) and written by `install`.
           cp config.example.toml README.md LICENSE CHANGELOG.md "$stage/"
           tar -C dist -czf "dist/${tarball}" "$folder"
           cp target/release/niri-battery-keeper "dist/${binary}"

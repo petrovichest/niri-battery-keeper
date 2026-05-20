@@ -41,11 +41,21 @@ Dropped:
 
 Still open:
 
-- **Drop `systemd/` from the release tarball.** Now that `install` ships
-  the unit embedded, the manual flow can read it out of
-  `target/release/niri-battery-keeper` (or skip it entirely). Pull the
-  directory out of the tarball workflow once we're confident no docs link
-  the manual path.
+- (none — section ready to retire once the next release ships the
+  slimmer tarball and the GUI-only entry point)
+
+Done in [Unreleased]:
+
+- ~~**Drop `systemd/` from the release tarball.**~~ The unit is embedded
+  in the binary and written by the GUI's "Install service" button, so
+  the tarball's `systemd/` copy was dead weight. README's "Manual
+  install" path lives under "Build from source" and uses the in-repo
+  `systemd/` — unchanged.
+- ~~**Collapse all lifecycle into the GUI.**~~ Removed the `install` /
+  `uninstall` / `mode` / `disable` / `enable` / `status` CLI
+  subcommands. Everything user-facing now lives in the GUI; the binary
+  itself only knows `niri-battery-keeper` (open GUI) and
+  `niri-battery-keeper daemon` (systemd entry point).
 
 ## Packaging / distribution
 

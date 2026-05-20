@@ -3,15 +3,14 @@
 # (`systemctl --user kill -s SIGHUP niri-battery-keeper.service`) or when the GUI's
 # Apply button is clicked.
 
-# Currently active mode. Switch via the GUI's mode bar, CLI
-# (`niri-battery-keeper mode <name>`), or by editing this and reloading.
+# Currently active mode. Switch via the GUI's mode bar, or by editing
+# this and sending SIGHUP / clicking Apply in the GUI.
 active_mode = "off"
 
 # Master kill switch. When true, the daemon stops applying ANY restriction
 # regardless of mode or per-app rules, and releases every scope it had
 # touched. Use this as a "panic button" when an experiment leaves apps
-# stuck. Toggle from CLI (`niri-battery-keeper disable` / `enable`) or
-# from the red bar at the top of the GUI.
+# stuck. Toggle via the red bar at the top of the GUI.
 disabled = false
 
 # ──────────────────────────────────────────────────────────────────────────────

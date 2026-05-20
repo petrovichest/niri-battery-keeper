@@ -1,9 +1,10 @@
-//! `install` / `uninstall` subcommands.
+//! Self-bootstrap from a single binary.
 //!
-//! Self-bootstrap from a single binary: copy `/proc/self/exe` into
-//! `~/.local/bin/`, write the embedded systemd user unit, then `enable --now`
-//! it. Uninstall reverses everything (config dir is left alone unless the
-//! user passes `--purge`).
+//! Copy `/proc/self/exe` into `~/.local/bin/`, write the embedded systemd
+//! user unit, then `enable --now` it. Driven by the GUI's "Install service"
+//! banner; [`remove_service`] is the corresponding teardown for the GUI's
+//! "Uninstall service" button. The binary itself has no `install` /
+//! `uninstall` CLI — everything lifecycle-related lives in the GUI.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -159,7 +160,6 @@ pub fn install() -> Result<(), Box<dyn Error>> {
     systemctl_user(&["daemon-reload"])?;
     systemctl_user(&["enable", "--now", UNIT_FILE_NAME])?;
     println!("enabled & started {UNIT_FILE_NAME}");
-    println!("\nRun `niri-battery-keeper status` to verify the daemon is up.");
     Ok(())
 }
 
@@ -181,39 +181,5 @@ pub fn remove_service() -> Result<(), Box<dyn Error>> {
     }
 
     systemctl_user_best_effort(&["daemon-reload"]);
-    Ok(())
-}
-
-pub fn uninstall(purge_config: bool) -> Result<(), Box<dyn Error>> {
-    remove_service()?;
-
-    let bin = bin_target()?;
-    match std::fs::remove_file(&bin) {
-        Ok(()) => println!("removed {}", bin.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("no binary at {} — skipping", bin.display());
-        }
-        Err(e) => return Err(format!("removing {}: {e}", bin.display()).into()),
-    }
-
-    let cfg_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().unwrap_or_default().join(".config"))
-        .join("niri-battery-keeper");
-
-    if purge_config {
-        match std::fs::remove_dir_all(&cfg_dir) {
-            Ok(()) => println!("removed {}", cfg_dir.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("removing {}: {e}", cfg_dir.display()).into()),
-        }
-    } else if cfg_dir.exists() {
-        println!(
-            "\nConfig dir kept at {}.\n\
-             Re-run with `uninstall --purge` to delete it too.",
-            cfg_dir.display(),
-        );
-    }
-
     Ok(())
 }
