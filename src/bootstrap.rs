@@ -163,9 +163,12 @@ pub fn install() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn uninstall(purge_config: bool) -> Result<(), Box<dyn Error>> {
-    // Best-effort: keep going even if a step fails — we want to clean up
-    // every artefact we can reach.
+/// Tear down only the systemd user service: `disable --now`, remove the
+/// unit file, daemon-reload. Leaves the binary in `~/.local/bin/` and the
+/// config dir alone — used by the GUI's "Remove service" button, where the
+/// user wants to stop autostart but keep the app installed.
+pub fn remove_service() -> Result<(), Box<dyn Error>> {
+    // Best-effort: a half-installed state should still clean up.
     systemctl_user_best_effort(&["disable", "--now", UNIT_FILE_NAME]);
 
     let unit = unit_target()?;
@@ -178,6 +181,11 @@ pub fn uninstall(purge_config: bool) -> Result<(), Box<dyn Error>> {
     }
 
     systemctl_user_best_effort(&["daemon-reload"]);
+    Ok(())
+}
+
+pub fn uninstall(purge_config: bool) -> Result<(), Box<dyn Error>> {
+    remove_service()?;
 
     let bin = bin_target()?;
     match std::fs::remove_file(&bin) {

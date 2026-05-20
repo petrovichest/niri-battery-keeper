@@ -189,11 +189,8 @@ struct App {
     /// Outcome of the last "Install service" click, surfaced inline in the
     /// install card. `None` until the user clicks the button at least once.
     install_status: Option<Result<String, String>>,
-    /// Modal flag: is the "Uninstall service?" confirmation window open?
-    show_uninstall_confirm: bool,
-    /// Tracks the purge checkbox inside the uninstall modal. Reset each time
-    /// the modal opens so a previous tick doesn't carry over silently.
-    uninstall_purge: bool,
+    /// Modal flag: is the "Remove service?" confirmation window open?
+    show_remove_service_confirm: bool,
 }
 
 impl App {
@@ -211,8 +208,7 @@ impl App {
             persisted,
             service_installed: crate::bootstrap::is_installed(),
             install_status: None,
-            show_uninstall_confirm: false,
-            uninstall_purge: false,
+            show_remove_service_confirm: false,
         };
         me.poll();
         me
@@ -327,13 +323,13 @@ impl App {
         }
     }
 
-    /// Reverse [`Self::install_service`]. Same trade-off: blocks the UI for
-    /// the duration of `systemctl --user disable --now` + unlinks. The
-    /// running GUI keeps going from its in-memory image even after the
-    /// on-disk binary is gone — the install banner reappears so the user
-    /// can put it back without restarting the app.
-    fn uninstall_service(&mut self, purge: bool) {
-        match crate::bootstrap::uninstall(purge) {
+    /// Inverse of [`Self::install_service`] — but only at the service level.
+    /// Disables the systemd unit, removes the unit file, runs daemon-reload.
+    /// Leaves the binary in `~/.local/bin/` so the GUI can stay open and
+    /// re-install in one click. For a full wipe (binary + config) the user
+    /// drops to `niri-battery-keeper uninstall` from the terminal.
+    fn remove_service(&mut self) {
+        match crate::bootstrap::remove_service() {
             Ok(()) => {
                 self.service_installed = false;
                 // Park the install card in a clean state — the previous
@@ -344,7 +340,7 @@ impl App {
                 self.last_poll = Instant::now() - Duration::from_secs(10);
             }
             Err(e) => {
-                self.error = Some(format!("uninstall failed: {e}"));
+                self.error = Some(format!("remove service failed: {e}"));
             }
         }
     }
@@ -549,20 +545,20 @@ impl eframe::App for App {
                     }
                     ui.separator();
                     if self.service_installed {
-                        let uninstall_btn = egui::Button::new(
-                            RichText::new("Uninstall…").color(Color32::from_rgb(255, 200, 200)),
+                        let remove_btn = egui::Button::new(
+                            RichText::new("Remove service…").color(Color32::from_rgb(255, 200, 200)),
                         )
                         .fill(Color32::from_rgb(110, 50, 50));
                         if ui
-                            .add(uninstall_btn)
+                            .add(remove_btn)
                             .on_hover_text(
-                                "Stop the systemd user service, remove the unit file and \
-                                 the binary copy from ~/.local/bin/. Asks for confirmation.",
+                                "Stop the systemd user service and remove the unit file. \
+                                 Binary stays in ~/.local/bin/ so you can re-enable in one \
+                                 click. Asks for confirmation.",
                             )
                             .clicked()
                         {
-                            self.show_uninstall_confirm = true;
-                            self.uninstall_purge = false;
+                            self.show_remove_service_confirm = true;
                         }
                     }
                     if ui
@@ -623,49 +619,42 @@ impl eframe::App for App {
             }
         }
 
-        if self.show_uninstall_confirm {
-            self.draw_uninstall_modal(ctx);
+        if self.show_remove_service_confirm {
+            self.draw_remove_service_modal(ctx);
         }
     }
 }
 
 impl App {
-    fn draw_uninstall_modal(&mut self, ctx: &egui::Context) {
+    fn draw_remove_service_modal(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
-        let mut open = self.show_uninstall_confirm;
-        egui::Window::new("Uninstall niri-battery-keeper?")
+        let mut open = self.show_remove_service_confirm;
+        egui::Window::new("Remove systemd service?")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(420.0)
+            .default_width(440.0)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(screen.center())
             .show(ctx, |ui| {
-                ui.label(
-                    "This will stop the systemd user service and remove:",
-                );
+                ui.label("This will:");
                 ui.add_space(2.0);
                 ui.label(
-                    RichText::new("  • ~/.config/systemd/user/niri-battery-keeper.service")
-                        .monospace()
+                    RichText::new("  • stop the running daemon (systemctl --user disable --now)")
                         .small(),
                 );
                 ui.label(
-                    RichText::new("  • ~/.local/bin/niri-battery-keeper")
+                    RichText::new("  • delete ~/.config/systemd/user/niri-battery-keeper.service")
                         .monospace()
                         .small(),
                 );
                 ui.add_space(6.0);
-                ui.checkbox(
-                    &mut self.uninstall_purge,
-                    "Also delete config (~/.config/niri-battery-keeper/)",
-                );
-                ui.add_space(4.0);
                 ui.label(
                     RichText::new(
-                        "This window keeps running until you close it — the install \
-                         banner will reappear so you can put the service back without \
-                         relaunching.",
+                        "The binary stays in ~/.local/bin/ — re-enable any time via the \
+                         \"Install service\" banner that reappears, or by running \
+                         `niri-battery-keeper install` from a terminal. To wipe the binary \
+                         and config too, use `niri-battery-keeper uninstall --purge`.",
                     )
                     .weak()
                     .small(),
@@ -673,24 +662,22 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
-                        self.show_uninstall_confirm = false;
+                        self.show_remove_service_confirm = false;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let confirm = egui::Button::new(
-                            RichText::new("Uninstall").color(Color32::WHITE).strong(),
+                            RichText::new("Remove service").color(Color32::WHITE).strong(),
                         )
                         .fill(Color32::from_rgb(180, 60, 60));
                         if ui.add(confirm).clicked() {
-                            let purge = self.uninstall_purge;
-                            self.show_uninstall_confirm = false;
-                            self.uninstall_service(purge);
+                            self.show_remove_service_confirm = false;
+                            self.remove_service();
                         }
                     });
                 });
             });
-        // If the user clicked the window's [x], `open` is now false.
         if !open {
-            self.show_uninstall_confirm = false;
+            self.show_remove_service_confirm = false;
         }
     }
 }
