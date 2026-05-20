@@ -162,6 +162,60 @@ Still open (only if size becomes a real problem before 1.0):
   on `glutin-winit` (or for egui-winit to gate `arboard`/`webbrowser`/
   X11 behind toggles). Then revisit and potentially save ~300–400 KB.
 
+## Next iteration (planned)
+
+User's punch list captured 2026-05-21:
+
+- **TDP UI — drop the sliders.** Replace the slider widgets in the TDP tab
+  with numeric input + preset chips (15 W / 25 W / 35 W / Max). Sliders
+  encourage twiddling; the real workflow is pick-a-preset.
+- **Battery consumption graph + per-app energy log.** Sample power draw
+  (`/sys/class/power_supply/BAT*/power_now`, or compute from `energy_now`
+  deltas) on a short cadence, render a rolling timeline in the GUI, and
+  attribute drain to apps by proportioning RAPL package-energy across the
+  per-scope `cpu.stat` usage we already read. Persist to
+  `~/.local/share/niri-battery-keeper/history.{db,jsonl}`. Adds a "what's
+  draining my battery" answer the app currently hand-waves.
+- **Per-app / focused-window TDP profile.** When app X is focused, switch
+  PL1/PL2 to profile X; when Y is focused, switch to Y. Generalises the
+  current global TDP into the same per-app rule shape used by the cgroup
+  throttler, and pairs naturally with the consumption log above.
+- **Redesigned app icon.** Current `assets/niri-battery-keeper.svg` is a
+  12-line placeholder (battery outline + lightning). Commission/draw a
+  proper one that matches Niri's geometric language.
+- **Refresh README screenshots.** Recapture Apps + Presets + TDP + new
+  battery graph view once the items above land.
+- **Design pass for visual consistency.** Audit spacing, header style,
+  accent colours, button shapes across Apps / Presets / TDP / Settings;
+  pick one system and apply everywhere.
+- **System tray indicator.** Battery %, current mode, and a right-click
+  menu to switch modes / TDP profiles without opening the GUI. Most useful
+  "quiet" surface for an app that mostly runs in the background. Native
+  StatusNotifierItem (KDE / wlroots-friendly) via the `ksni` crate, or
+  `system-tray` if we want a more direct D-Bus impl.
+- **AMD RAPL support.** `rapl_helper.rs` is Intel-only today; `amd-rapl`
+  zones exist under `/sys/class/powercap/` on Zen 4+. Detect the available
+  zone in the helper, generalise the PL1/PL2 abstraction (AMD exposes
+  `constraint_0_power_limit_uw` similarly but caps and semantics differ),
+  and keep one code path for both. Roughly doubles addressable hardware.
+- **Localization (ru-RU).** Project author works in Russian; the GUI is
+  small enough (a few dozen strings) that adding `fluent-rs` (or a simple
+  static-table `t!()` macro) now is cheaper than retrofitting later.
+  Default to system locale; fall back to en-US.
+
+Suggestions to consider alongside the above:
+
+- **Battery time-remaining estimate.** Falls out of the consumption log
+  almost for free; show in tray and main window.
+- **Notifications on auto mode/TDP switch.** Short desktop notification
+  (libnotify / `notify-rust`) when something changes under the user's feet,
+  so quiet CPU never feels like a bug.
+- **Power-source-aware default profile.** AC plugged in → unrestricted
+  mode + max TDP; on battery → user's chosen default. Currently the user
+  has to flip it manually each time they unplug.
+- **CSV / JSON export of per-app energy history.** Once we log it,
+  exporting is ~free and gives users data they can actually act on.
+
 ## Other ideas
 
 - **ARM64 / aarch64 builds.** Add a matrix to `.github/workflows/release.yml`.
