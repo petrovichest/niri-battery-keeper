@@ -5,6 +5,8 @@ pub mod ipc;
 pub mod proctree;
 pub mod system_scan;
 pub mod clipboard;
+pub mod battery;
+pub mod tray;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +41,9 @@ fn install_signals() {
         libc::signal(libc::SIGHUP, hup_handler);
         // Ignore SIGPIPE — we'd rather get EPIPE on write
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        // NB: don't set SIGCHLD=SIG_IGN here — it'd make every Command::output()
+        // throughout the daemon (systemctl in throttle.rs, etc.) return ECHILD.
+        // GUI fire-and-forget reaping is handled per-spawn instead.
     }
 }
 
@@ -46,6 +51,7 @@ enum DaemonMsg {
     Niri(niri::Event),
     Ipc(ipc::IpcMessage),
     Clipboard(clipboard::ClipboardEvent),
+    Tray(tray::TrayAction),
 }
 
 #[derive(Default, Debug)]
@@ -446,6 +452,35 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // 30 s keeps the tray's battery % roughly current without burning a
+    // wake-up per tick.
+    const BATTERY_POLL: Duration = Duration::from_secs(30);
+
+    // System tray (StatusNotifierItem). Best-effort: missing D-Bus session
+    // bus or no host appindicator support just yields `None`, daemon
+    // continues as before.
+    let tray_handle = {
+        let mode_names: Vec<String> = config.modes.keys().cloned().collect();
+        let bat = battery::read();
+        match tray::spawn(config.active_mode.clone(), mode_names, config.disabled, bat) {
+            Ok((handle, rx)) => {
+                let tx = msg_tx.clone();
+                thread::spawn(move || {
+                    while let Ok(action) = rx.recv() {
+                        if tx.send(DaemonMsg::Tray(action)).is_err() { break; }
+                    }
+                });
+                log::info!("tray service registered");
+                Some(handle)
+            }
+            Err(e) => {
+                log::warn!("tray service unavailable: {e}");
+                None
+            }
+        }
+    };
+    let mut last_battery_poll = Instant::now();
+
     let mut state = State::new();
 
     // Bootstrap snapshot from niri (may fail; that's fine, the event-stream
@@ -498,23 +533,45 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             log::info!("SIGHUP: reloading config");
             config = Config::load_or_default();
             state.reconcile(&config);
+            push_tray_state(&tray_handle, &config);
         }
 
-        let timeout = state.next_timeout();
+        // Cap the recv timeout at the battery-poll interval so a quiet
+        // daemon still refreshes the tray's % at least every 30 s.
+        let timeout = state.next_timeout().min(BATTERY_POLL);
         match msg_rx.recv_timeout(timeout) {
             Ok(DaemonMsg::Niri(ev)) => {
                 handle_niri_event(&mut state, ev, &config);
             }
             Ok(DaemonMsg::Ipc(m)) => {
+                let touched_config = matches!(
+                    m.req,
+                    Request::SetMode { .. }
+                        | Request::SetConfig { .. }
+                        | Request::SetDisabled { .. }
+                        | Request::Reload
+                );
                 handle_ipc(&mut state, &mut config, m);
+                if touched_config {
+                    push_tray_state(&tray_handle, &config);
+                }
             }
             Ok(DaemonMsg::Clipboard(ev)) => {
                 handle_clipboard_event(&mut state, ev, &config);
+            }
+            Ok(DaemonMsg::Tray(action)) => {
+                handle_tray_action(&mut state, &mut config, action);
+                push_tray_state(&tray_handle, &config);
             }
             Err(RecvTimeoutError::Timeout) => {
                 state.process_pending(&config);
             }
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        if last_battery_poll.elapsed() >= BATTERY_POLL {
+            last_battery_poll = Instant::now();
+            push_tray_battery(&tray_handle);
         }
     }
 
@@ -522,6 +579,91 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     state.throttler.reset_all();
     let _ = std::fs::remove_file(proto::socket_path());
     Ok(())
+}
+
+fn push_tray_state(
+    tray_handle: &Option<ksni::blocking::Handle<tray::TrayState>>,
+    config: &Config,
+) {
+    let Some(h) = tray_handle else { return };
+    let mode = config.active_mode.clone();
+    let modes: Vec<String> = config.modes.keys().cloned().collect();
+    let disabled = config.disabled;
+    h.update(move |s| {
+        s.set_mode(mode);
+        s.set_modes(modes);
+        s.set_disabled(disabled);
+    });
+}
+
+fn push_tray_battery(tray_handle: &Option<ksni::blocking::Handle<tray::TrayState>>) {
+    let Some(h) = tray_handle else { return };
+    let bat = battery::read();
+    h.update(move |s| s.set_battery(bat));
+}
+
+fn handle_tray_action(state: &mut State, config: &mut Config, action: tray::TrayAction) {
+    match action {
+        tray::TrayAction::SetMode(mode) => {
+            if !config.modes.contains_key(&mode) {
+                log::warn!("tray: unknown mode '{mode}'");
+                return;
+            }
+            log::info!("tray: switch mode → {mode}");
+            config.active_mode = mode;
+            if let Err(e) = config.save_to(&Config::path()) {
+                log::warn!("could not save config: {e}");
+            }
+            state.reconcile(config);
+        }
+        tray::TrayAction::SetDisabled(disabled) => {
+            if config.disabled == disabled {
+                return;
+            }
+            log::info!("tray: {} throttling", if disabled { "disable" } else { "enable" });
+            config.disabled = disabled;
+            if let Err(e) = config.save_to(&Config::path()) {
+                log::warn!("could not save config: {e}");
+            }
+            if disabled {
+                state.throttler.reset_all();
+                state.pending.clear();
+            } else {
+                state.reconcile(config);
+            }
+        }
+        tray::TrayAction::OpenGui => {
+            spawn_gui();
+        }
+    }
+}
+
+/// Re-exec ourselves with no args. The binary's GUI entry point opens a new
+/// window; a detached thread `wait()`s on the child so it doesn't linger as a
+/// zombie when it eventually exits (we can't blanket-set SIGCHLD=SIG_IGN
+/// because that breaks `Command::output()` elsewhere in the daemon).
+fn spawn_gui() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("tray: cannot locate own binary: {e}");
+            return;
+        }
+    };
+    let child = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match child {
+        Ok(mut c) => {
+            log::info!("tray: launched GUI ({}) pid={}", exe.display(), c.id());
+            thread::spawn(move || {
+                let _ = c.wait();
+            });
+        }
+        Err(e) => log::warn!("tray: failed to launch GUI: {e}"),
+    }
 }
 
 fn handle_clipboard_event(state: &mut State, ev: clipboard::ClipboardEvent, config: &Config) {

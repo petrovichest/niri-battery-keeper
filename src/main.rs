@@ -40,9 +40,15 @@ fn main() -> ExitCode {
         return rapl_helper::run(std::env::args().skip(1).collect());
     }
 
+    // env_logger's RUST_LOG (`info` by default in the unit file) gates the
+    // root level. zbus 5 (via tracing-log) and the tracing crate dump per-call
+    // INFO chatter that floods the journal once the tray is up — silence
+    // those two trees unconditionally, regardless of RUST_LOG.
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
     )
+    .filter_module("zbus", log::LevelFilter::Warn)
+    .filter_module("tracing", log::LevelFilter::Warn)
     .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();

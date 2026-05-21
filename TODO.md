@@ -180,19 +180,20 @@ User's punch list captured 2026-05-21:
   PL1/PL2 to profile X; when Y is focused, switch to Y. Generalises the
   current global TDP into the same per-app rule shape used by the cgroup
   throttler, and pairs naturally with the consumption log above.
-- **Redesigned app icon.** Current `assets/niri-battery-keeper.svg` is a
-  12-line placeholder (battery outline + lightning). Commission/draw a
-  proper one that matches Niri's geometric language.
 - **Refresh README screenshots.** Recapture Apps + Presets + TDP + new
   battery graph view once the items above land.
 - **Design pass for visual consistency.** Audit spacing, header style,
   accent colours, button shapes across Apps / Presets / TDP / Settings;
   pick one system and apply everywhere.
-- **System tray indicator.** Battery %, current mode, and a right-click
-  menu to switch modes / TDP profiles without opening the GUI. Most useful
-  "quiet" surface for an app that mostly runs in the background. Native
-  StatusNotifierItem (KDE / wlroots-friendly) via the `ksni` crate, or
-  `system-tray` if we want a more direct D-Bus impl.
+- ~~**System tray indicator.**~~ Daemon-side ksni 0.3 (blocking +
+  async-io) StatusNotifierItem: tooltip with battery %, charge glyph,
+  current mode; right-click menu with `Open GUI`, `Mode` submenu
+  (RadioGroup of `config.modes` keys), and `Throttling enabled`
+  checkmark wired to the kill switch. Left-click activates the GUI via
+  `current_exe()`. Battery polled from `/sys/class/power_supply/BAT*/`
+  every 30 s, plus pushed on every config-mutating event. TDP profile
+  switching not yet wired — that's coupled to the per-app TDP work and
+  belongs there.
 - **AMD RAPL support.** `rapl_helper.rs` is Intel-only today; `amd-rapl`
   zones exist under `/sys/class/powercap/` on Zen 4+. Detect the available
   zone in the helper, generalise the PL1/PL2 abstraction (AMD exposes

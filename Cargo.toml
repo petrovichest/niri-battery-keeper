@@ -21,6 +21,10 @@ env_logger = { version = "0.11", default-features = false, features = ["auto-col
 libc = "0.2"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# StatusNotifierItem tray. `blocking` provides the sync TrayMethods API the
+# daemon uses; zbus itself still needs an async runtime under the hood, so
+# `async-io` (smol-based, far lighter than tokio) is the explicit pick.
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 
 [profile.release]
 opt-level = "z"
