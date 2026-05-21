@@ -6,6 +6,7 @@ pub mod proctree;
 pub mod system_scan;
 pub mod clipboard;
 pub mod battery;
+pub mod energy;
 pub mod tray;
 
 use std::collections::{HashMap, HashSet};
@@ -20,6 +21,7 @@ use crate::proto::{
     SystemUnitCategory, SystemUnitInfo, WindowInfo,
 };
 use cgroup::UnitCache;
+use energy::EnergyMeter;
 use throttle::Throttler;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -83,6 +85,10 @@ struct State {
     /// lazily — the very first poll after startup has no prior sample, so
     /// the GUI shows `—`; from the next poll onward the delta is real.
     cpu_prev: HashMap<String, (Instant, u64)>,
+    /// Live power sampler. Ticks at 1 Hz from the main loop independently
+    /// of GUI polling — keeps the time-remaining EMA warm and the
+    /// session-Wh integral accurate even when no client is connected.
+    energy: EnergyMeter,
 }
 
 impl State {
@@ -295,6 +301,16 @@ impl State {
             .map(|u| (u.unit.as_str(), &u.limits))
             .collect();
 
+        // Number of logical CPUs is needed to turn per-scope CPU% (in "%
+        // of one core" / htop units) into a fraction of the chip's
+        // compute budget before multiplying by pkg_w. available_parallelism
+        // matches what /proc/stat would report — close enough for an
+        // attribution heuristic.
+        let ncpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1) as f32;
+        let pkg_w_smooth = self.energy.current_pkg_w();
+
         // Per-scope CPU% via a delta against the previous snapshot. First
         // call after startup (or for a freshly-appeared scope) yields None
         // — the GUI renders "—" until the next poll. Counter going
@@ -374,6 +390,17 @@ impl State {
             } else {
                 Some(scopes.iter().map(|s| s.cpu_pct.unwrap_or(0.0)).sum())
             };
+            // Proportional attribution of CPU package wattage: each 1% of
+            // one core gets pkg_w / (ncpus × 100) W. Systematically
+            // under-attributes (idle/leakage isn't backed out of pkg_w
+            // first) but matches what users intuitively expect: doubling
+            // a workload doubles its column, idle apps read 0.
+            let est_w = match (cpu_pct, pkg_w_smooth) {
+                (Some(pct), Some(pkg_w)) if ncpus > 0.0 => {
+                    Some(pct / 100.0 / ncpus * pkg_w)
+                }
+                _ => None,
+            };
             AppGroupInfo {
                 app_id: app_id.clone(),
                 window_count: app.windows.len(),
@@ -382,6 +409,7 @@ impl State {
                 any_throttled: scopes.iter().any(|s| s.throttled),
                 scopes,
                 cpu_pct,
+                est_w,
             }
         }).collect();
         apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
@@ -406,6 +434,7 @@ impl State {
             apps,
             throttled_units: throttled,
             system_units,
+            energy: self.energy.build_info(),
         }
     }
 }
@@ -455,6 +484,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 30 s keeps the tray's battery % roughly current without burning a
     // wake-up per tick.
     const BATTERY_POLL: Duration = Duration::from_secs(30);
+    // Energy sampler is the high-frequency tick now: graph cadence + EMA
+    // for time-remaining + Wh integral. Five sysfs reads per second, no
+    // user-visible cost on any laptop made this decade.
+    const ENERGY_POLL: Duration = Duration::from_secs(1);
 
     // System tray (StatusNotifierItem). Best-effort: missing D-Bus session
     // bus or no host appindicator support just yields `None`, daemon
@@ -480,6 +513,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let mut last_battery_poll = Instant::now();
+    let mut last_energy_poll = Instant::now() - ENERGY_POLL;
 
     let mut state = State::new();
 
@@ -536,9 +570,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             push_tray_state(&tray_handle, &config);
         }
 
-        // Cap the recv timeout at the battery-poll interval so a quiet
-        // daemon still refreshes the tray's % at least every 30 s.
-        let timeout = state.next_timeout().min(BATTERY_POLL);
+        // Cap the recv timeout at the energy-poll interval so the sampler
+        // keeps ticking even when no event traffic arrives. (Battery poll
+        // is a coarser superset and rides on the same wakeups.)
+        let timeout = state.next_timeout().min(ENERGY_POLL);
         match msg_rx.recv_timeout(timeout) {
             Ok(DaemonMsg::Niri(ev)) => {
                 handle_niri_event(&mut state, ev, &config);
@@ -567,6 +602,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 state.process_pending(&config);
             }
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        if last_energy_poll.elapsed() >= ENERGY_POLL {
+            last_energy_poll = Instant::now();
+            state.energy.sample();
         }
 
         if last_battery_poll.elapsed() >= BATTERY_POLL {

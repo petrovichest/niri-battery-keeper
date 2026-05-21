@@ -9,6 +9,9 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
+use egui_plot::{Legend, Line, Plot, PlotPoints};
+
+use crate::proto::EnergyInfo;
 
 const RAPL_BASE: &str = "/sys/class/powercap/intel-rapl:0";
 const HELPER_PATH: &str = "/usr/local/bin/nbk-set-rapl";
@@ -147,7 +150,7 @@ impl TdpState {
         }
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, energy: Option<&EnergyInfo>) {
         ui.add_space(8.0);
 
         // Polkit agent banner — only when missing. Shown above everything else
@@ -157,6 +160,16 @@ impl TdpState {
         if !self.polkit_agent_running {
             self.draw_polkit_agent_banner(ui);
             ui.add_space(8.0);
+        }
+
+        // Energy section first — comparative-test workflow is "watch the
+        // graph, move the slider, watch the graph respond". Putting it on
+        // top makes that loop obvious. The section reads daemon-sampled
+        // data (sysfs only, no helper needed) so it shows even when the
+        // TDP helper isn't installed yet.
+        if let Some(e) = energy {
+            self.draw_energy_section(ui, e);
+            ui.add_space(12.0);
         }
 
         if !self.helper_available {
@@ -470,6 +483,231 @@ fn uw_to_w(uw: u64) -> u32 {
 
 fn fmt_w(uw: Option<u64>) -> String {
     uw.map(|u| format!("{}W", uw_to_w(u))).unwrap_or_else(|| "—".into())
+}
+
+impl TdpState {
+    fn draw_energy_section(&mut self, ui: &mut egui::Ui, e: &EnergyInfo) {
+        // ─── Status card ─────────────────────────────────────────────────
+        egui::Frame::default()
+            .fill(Color32::from_rgb(28, 32, 40))
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let pct = e
+                        .capacity_pct
+                        .map(|p| format!("{p}%"))
+                        .unwrap_or_else(|| "—".into());
+                    let state_label = format_charge_state(&e.charge_state, e.on_ac);
+                    cell(
+                        ui,
+                        "Battery",
+                        Some(format!("{pct}  ·  {state_label}")),
+                    );
+                    ui.add_space(20.0);
+
+                    // Wall-clock time since the last AC unplug. Persists
+                    // across daemon restarts via the runtime state file —
+                    // a restart mid-battery-session keeps counting from
+                    // the real unplug moment, not from "now".
+                    let on_battery_label = match e.on_battery_since_unix {
+                        Some(ts) => format_elapsed_since_unix(ts),
+                        None => "—".into(),
+                    };
+                    cell(ui, "On battery for", Some(on_battery_label));
+                    ui.add_space(20.0);
+
+                    let time_label = format_duration(e.time_remaining_s);
+                    let time_caption = match e.charge_state.as_str() {
+                        "charging" => "Time to full",
+                        _ => "Time to empty",
+                    };
+                    cell(ui, time_caption, Some(time_label));
+                    ui.add_space(20.0);
+
+                    cell(
+                        ui,
+                        "Session used",
+                        Some(format!("{:.2} Wh", e.session_discharge_wh)),
+                    );
+                });
+                ui.add_space(8.0);
+                // Live wattage breakdown — disjoint slices that sum to
+                // Battery, so the user can read this row as a real
+                // budget, not as overlapping subsets.
+                //
+                //   Battery = CPU + GpuSoc + Other
+                //   CPU      = RAPL package
+                //   GpuSoc   = psys − package  (iGPU + IMC + DMI + …)
+                //   Other    = battery − psys  (display, NVMe, WiFi, EC)
+                //
+                // When psys is missing we degrade to two slices
+                // (CPU + everything-else), losing the GPU/SoC vs
+                // peripherals distinction.
+                let cpu = e.pkg_w;
+                let gpu_soc = match (e.psys_w, e.pkg_w) {
+                    (Some(p), Some(c)) => Some((p - c).max(0.0)),
+                    _ => None,
+                };
+                let other = match (e.battery_w, e.psys_w, e.pkg_w) {
+                    (Some(b), Some(p), _) => Some((b - p).max(0.0)),
+                    (Some(b), None, Some(c)) => Some((b - c).max(0.0)),
+                    _ => None,
+                };
+                ui.horizontal_wrapped(|ui| {
+                    cell(
+                        ui,
+                        "Battery (total)",
+                        e.battery_w.map(|w| format!("{w:.1} W")),
+                    );
+                    ui.add_space(20.0);
+                    cell(ui, "CPU", cpu.map(|w| format!("{w:.1} W")));
+                    ui.add_space(20.0);
+                    cell(ui, "GPU + SoC fabric", gpu_soc.map(|w| format!("{w:.1} W")));
+                    ui.add_space(20.0);
+                    cell(
+                        ui,
+                        "Other (display, NVMe…)",
+                        other.map(|w| format!("{w:.1} W")),
+                    );
+                });
+            });
+
+        // ─── Discharge curve ─────────────────────────────────────────────
+        // MacBook-style: % charge over time. The hourly slope is the real
+        // signal for comparative tests — flatter line = better setting.
+        // Live wattage lives in the cards above; the graph is the trend.
+        ui.add_space(10.0);
+        ui.label(RichText::new("Battery level over time").strong());
+        ui.add_space(4.0);
+
+        if e.samples.is_empty() {
+            ui.label(
+                RichText::new(
+                    "Collecting samples… first point lands ~10 s after daemon start.",
+                )
+                .small()
+                .weak()
+                .italics(),
+            );
+            return;
+        }
+
+        // Y axis: percentage. Auto-scaling around the observed band would
+        // make short sessions look like cliff edges. Pin 0..100 instead,
+        // matches the macOS convention and gives the slope visual scale.
+        // X axis: minutes ago, 0 = now.
+        let pts: PlotPoints = e
+            .samples
+            .iter()
+            .filter_map(|s| {
+                s.capacity_pct
+                    .map(|p| [-(s.age_s as f64) / 60.0, p as f64])
+            })
+            .collect();
+
+        // Color cue: amber for discharging, green when charging. We pick
+        // one based on the last sample; with very short charging blips in
+        // a mostly-discharging line the colour is "current state", which
+        // matches what the user expects right now in the status card.
+        let line_color = if e
+            .samples
+            .last()
+            .map(|s| s.discharging)
+            .unwrap_or(true)
+        {
+            Color32::from_rgb(240, 180, 80)
+        } else {
+            Color32::from_rgb(140, 220, 140)
+        };
+
+        Plot::new("discharge_curve")
+            .height(180.0)
+            .legend(Legend::default())
+            .y_axis_label("% charge")
+            .x_axis_label("minutes ago")
+            .x_axis_formatter(|m, _range| format_minutes_ago(m.value))
+            .y_axis_formatter(|m, _range| format!("{:.0}%", m.value))
+            .allow_drag(false)
+            .allow_zoom(false)
+            .allow_scroll(false)
+            .allow_boxed_zoom(false)
+            .show_axes([true, true])
+            .include_y(0.0)
+            .include_y(100.0)
+            .show(ui, |plot_ui| {
+                plot_ui.line(
+                    Line::new(pts)
+                        .name("battery %")
+                        .color(line_color)
+                        .width(2.0),
+                );
+            });
+
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Cards above are disjoint slices that sum to Battery: CPU is the RAPL \
+                 package, GPU + SoC fabric is psys − package, Other is battery − psys. \
+                 The line here is up to 60 min of charge percentage at 10 s resolution.",
+            )
+            .weak()
+            .small(),
+        );
+    }
+}
+
+fn format_charge_state(state: &str, on_ac: bool) -> String {
+    let base = match state {
+        "charging" => "charging",
+        "discharging" => "on battery",
+        "full" => "full",
+        "not_charging" => "not charging",
+        _ => "unknown",
+    };
+    if on_ac && state != "charging" && state != "full" {
+        format!("{base}  (AC plugged)")
+    } else {
+        base.to_string()
+    }
+}
+
+fn format_duration(secs: Option<u32>) -> String {
+    let Some(s) = secs else { return "—".into() };
+    let h = s / 3600;
+    let m = (s % 3600) / 60;
+    if h > 0 {
+        format!("{h} h {m:02} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
+fn format_elapsed_since_unix(since_unix: u64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let elapsed = now.saturating_sub(since_unix) as u32;
+    // Sub-minute granularity isn't useful here — the user reads this once
+    // every few minutes at most. Round to nearest minute.
+    let m_total = elapsed / 60;
+    let h = m_total / 60;
+    let m = m_total % 60;
+    if h > 0 {
+        format!("{h} h {m:02} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
+fn format_minutes_ago(minutes_ago: f64) -> String {
+    let m = minutes_ago.round() as i64;
+    if m == 0 {
+        return "now".into();
+    }
+    let abs = m.unsigned_abs();
+    format!("-{abs} min")
 }
 
 fn discover_coretemp() -> Option<PathBuf> {

@@ -15,7 +15,7 @@ pub enum ChargeState {
 }
 
 impl ChargeState {
-    fn parse(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s.trim() {
             "Charging" => Self::Charging,
             "Discharging" => Self::Discharging,
@@ -59,7 +59,7 @@ pub fn read() -> Option<BatteryInfo> {
             continue;
         };
         let state = fs::read_to_string(path.join("status"))
-            .map(|s| ChargeState::parse(&s))
+            .map(|s| ChargeState::parse_str(&s))
             .unwrap_or(ChargeState::Unknown);
 
         sum_pct += pct.min(100);

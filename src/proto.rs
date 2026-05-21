@@ -34,6 +34,64 @@ pub struct DaemonState {
     /// with it. Empty when the cgroup tree can't be read.
     #[serde(default)]
     pub system_units: Vec<SystemUnitInfo>,
+    /// Live battery / CPU / platform power, time-to-empty estimate, and a
+    /// rolling 10-minute sample buffer for the GUI's energy graph. Always
+    /// present; individual fields are `Option<_>` for hardware that
+    /// doesn't expose a given counter.
+    #[serde(default)]
+    pub energy: EnergyInfo,
+}
+
+/// One row of the rolling battery-level timeline. Newest sample has the
+/// smallest `age_s`. One sample per ~10 s; the live wattage breakdown for
+/// "what's draining right now" lives on [`EnergyInfo`] directly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnergySample {
+    /// Seconds before the moment the snapshot was built. `0.0` is "now".
+    pub age_s: f32,
+    /// Battery percentage at this point. Computed as
+    /// `charge_now / charge_full × 100` rather than the integer `capacity`
+    /// file so the graph line shows fractional slope rather than 1 %
+    /// step-changes per minute.
+    pub capacity_pct: Option<f32>,
+    /// True when this sample's window was a discharging period. Lets the
+    /// GUI tint or split the line into charge/discharge segments.
+    pub discharging: bool,
+    /// Average battery flow (W) over the sample's aggregation window.
+    /// Useful for graph tooltips, not the main signal.
+    pub battery_w: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnergyInfo {
+    /// Instantaneous magnitude of battery flow in watts. Sign-less; use
+    /// [`Self::charge_state`] to tell charge from discharge.
+    pub battery_w: Option<f32>,
+    /// CPU package power, watts.
+    pub pkg_w: Option<f32>,
+    /// Whole-platform RAPL (psys), watts. Absent on chips without the
+    /// psys domain — most desktop SKUs, some older mobile parts.
+    pub psys_w: Option<f32>,
+    pub capacity_pct: Option<u8>,
+    /// `"charging" | "discharging" | "full" | "not_charging" | "unknown"`.
+    pub charge_state: String,
+    /// AC adapter `online` flag. Independent of charge_state because some
+    /// laptops report "Not charging" with AC plugged in at 100%.
+    pub on_ac: bool,
+    /// Smoothed seconds-to-empty (when discharging) or seconds-to-full
+    /// (when charging). `None` for AC/idle or while the EMA hasn't warmed.
+    pub time_remaining_s: Option<u32>,
+    /// Watt-hours discharged from the battery since the daemon started.
+    /// Increments only while `charge_state == "discharging"`.
+    pub session_discharge_wh: f32,
+    /// Unix timestamp of the most recent AC-unplug, persisted across
+    /// daemon restarts. `None` while on AC, or before the daemon has
+    /// ever seen a transition (and no persisted state).
+    #[serde(default)]
+    pub on_battery_since_unix: Option<u64>,
+    /// Rolling samples (oldest first, newest last). Capped at ~600 entries
+    /// = 10 min at 1 Hz cadence.
+    pub samples: Vec<EnergySample>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +120,12 @@ pub struct AppGroupInfo {
     /// interval has elapsed yet.
     #[serde(default)]
     pub cpu_pct: Option<f32>,
+    /// Approximate CPU-package wattage attributed to this app: scope CPU
+    /// share × smoothed pkg W. Proportional estimate, not a per-process
+    /// measurement — hardware doesn't measure that. `None` when either
+    /// `cpu_pct` or `pkg_w` is unavailable.
+    #[serde(default)]
+    pub est_w: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

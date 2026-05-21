@@ -599,8 +599,12 @@ impl eframe::App for App {
             // TDP tab is independent of the daemon — show it even when the
             // daemon socket is unreachable.
             if self.view == View::Tdp {
+                // Energy data comes from the daemon; if it's unreachable
+                // (first launch, freshly installed) we pass None and the
+                // TDP tab degrades to its old behaviour minus the graph.
+                let energy = self.draft.as_ref().map(|d| &d.energy);
                 ScrollArea::vertical().show(ui, |ui| {
-                    self.tdp.draw(ui);
+                    self.tdp.draw(ui, energy);
                 });
                 return;
             }
@@ -883,12 +887,26 @@ fn draw_app_list(
                         Some(p) => format!("{p:.1}% cpu"),
                         None => "— cpu".to_string(),
                     };
+                    // Proportional attribution of CPU package watts to this
+                    // app's CPU share. Hardware doesn't measure per-process
+                    // energy, so this is "if pkg_w were perfectly linear in
+                    // CPU time, this app would be using ≈ N W". Useful for
+                    // ranking and trend-spotting, not for accounting.
+                    let w_str = match app.est_w {
+                        Some(w) => format!("≈ {w:.2} W"),
+                        None => "— W".to_string(),
+                    };
                     ui.label(
                         RichText::new(format!(
-                            "{cpu_str} · {} window(s) · {scope_count} scope(s) · {total_pids} pid(s)",
+                            "{w_str} · {cpu_str} · {} window(s) · {scope_count} scope(s) · {total_pids} pid(s)",
                             app.window_count
                         ))
                         .weak()
+                    )
+                    .on_hover_text(
+                        "Approximate CPU-package wattage = scope's CPU share × smoothed pkg W. \
+                         Idle/leakage isn't backed out — a 0% app reads 0 W, a 50% app reads \
+                         50% of one core's share of pkg_w.",
                     );
                 });
             });
