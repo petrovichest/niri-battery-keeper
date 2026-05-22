@@ -48,15 +48,22 @@ pub struct DaemonState {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EnergySample {
     /// Seconds before the moment the snapshot was built. `0.0` is "now".
+    /// Always computed at snapshot time from `now - at_unix`, so it stays
+    /// honest across daemon restarts and AC plug/unplug events that
+    /// would otherwise leave gaps in a position-derived age.
     pub age_s: f32,
     /// Battery percentage at this point. Computed as
     /// `charge_now / charge_full × 100` rather than the integer `capacity`
-    /// file so the graph line shows fractional slope rather than 1 %
+    /// file so the graph shows fractional slope rather than 1 %
     /// step-changes per minute.
     pub capacity_pct: Option<f32>,
-    /// True when this sample's window was a discharging period. Lets the
-    /// GUI tint or split the line into charge/discharge segments.
+    /// True when this sample's window was a discharging period. Drives
+    /// per-bar tinting (amber discharging / green charging) in the GUI.
     pub discharging: bool,
+    /// True when this sample's window was a charging period. Disjoint
+    /// from `discharging`; both false means full/idle on AC.
+    #[serde(default)]
+    pub charging: bool,
     /// Average battery flow (W) over the sample's aggregation window.
     /// Useful for graph tooltips, not the main signal.
     pub battery_w: Option<f32>,
@@ -81,16 +88,28 @@ pub struct EnergyInfo {
     /// Smoothed seconds-to-empty (when discharging) or seconds-to-full
     /// (when charging). `None` for AC/idle or while the EMA hasn't warmed.
     pub time_remaining_s: Option<u32>,
-    /// Watt-hours discharged from the battery since the daemon started.
-    /// Increments only while `charge_state == "discharging"`.
+    /// Watt-hours discharged from the battery during the current
+    /// discharge session. Resets when AC is plugged in (so the value
+    /// the user sees is "this discharge cycle", not a lifetime total).
+    /// Persists across daemon restarts that happen mid-session.
     pub session_discharge_wh: f32,
+    /// Watt-hours pushed into the battery during the current charging
+    /// session. Mirror of [`Self::session_discharge_wh`]: resets when AC
+    /// is unplugged. Persists across daemon restarts.
+    #[serde(default)]
+    pub session_charge_wh: f32,
     /// Unix timestamp of the most recent AC-unplug, persisted across
     /// daemon restarts. `None` while on AC, or before the daemon has
     /// ever seen a transition (and no persisted state).
     #[serde(default)]
     pub on_battery_since_unix: Option<u64>,
-    /// Rolling samples (oldest first, newest last). Capped at ~600 entries
-    /// = 10 min at 1 Hz cadence.
+    /// Unix timestamp of the most recent AC-plug. Mirror of
+    /// [`Self::on_battery_since_unix`]: `None` while on battery.
+    #[serde(default)]
+    pub on_ac_since_unix: Option<u64>,
+    /// Rolling battery-level samples (oldest first, newest last). Spans
+    /// the current battery session including any post-plug recharge,
+    /// capped at ~48 h of 10 s buckets. Survives daemon restarts.
     pub samples: Vec<EnergySample>,
 }
 

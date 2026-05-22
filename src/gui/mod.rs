@@ -40,7 +40,30 @@ fn configure_ui(ctx: &egui::Context) {
     if (zoom - 1.0).abs() > f32::EPSILON {
         ctx.set_zoom_factor(zoom);
     }
+    install_uniform_text_sizes(ctx);
     install_symbol_font_fallbacks(ctx);
+}
+
+/// Force every text style to the same body size, so `.small()`,
+/// `.monospace()`, button text and label text all render at the same
+/// visual size. Earlier passes had a mix of `.size(13.0)`, `.size(15.0)`
+/// and `.small()` scattered through the GUI which made the app look
+/// uneven; here we normalise once and keep call sites style-only
+/// (`.strong()`, `.weak()`, `.italics()`).
+fn install_uniform_text_sizes(ctx: &egui::Context) {
+    use egui::{FontFamily, FontId, TextStyle};
+    const BODY_PX: f32 = 14.0;
+    const HEADING_PX: f32 = 16.0;
+    let mut style = (*ctx.style()).clone();
+    style.text_styles = [
+        (TextStyle::Heading,   FontId::new(HEADING_PX, FontFamily::Proportional)),
+        (TextStyle::Body,      FontId::new(BODY_PX,    FontFamily::Proportional)),
+        (TextStyle::Button,    FontId::new(BODY_PX,    FontFamily::Proportional)),
+        (TextStyle::Small,     FontId::new(BODY_PX,    FontFamily::Proportional)),
+        (TextStyle::Monospace, FontId::new(BODY_PX,    FontFamily::Monospace)),
+    ]
+    .into();
+    ctx.set_style(style);
 }
 
 /// egui's bundled fonts (Ubuntu-Light + emoji-icon-font + NotoEmoji) miss
@@ -504,13 +527,13 @@ impl eframe::App for App {
             ui.separator();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.selectable_label(self.view == View::Apps, RichText::new("Apps").size(14.0)).clicked() {
+                if ui.selectable_label(self.view == View::Apps, RichText::new("Apps")).clicked() {
                     self.view = View::Apps;
                 }
-                if ui.selectable_label(self.view == View::Presets, RichText::new("Presets").size(14.0)).clicked() {
+                if ui.selectable_label(self.view == View::Presets, RichText::new("Presets")).clicked() {
                     self.view = View::Presets;
                 }
-                if ui.selectable_label(self.view == View::Tdp, RichText::new("TDP").size(14.0)).clicked() {
+                if ui.selectable_label(self.view == View::Tdp, RichText::new("TDP")).clicked() {
                     self.view = View::Tdp;
                 }
             });
@@ -863,7 +886,7 @@ fn draw_app_list(
 
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&app_id).strong().size(15.0));
+                ui.label(RichText::new(&app_id).strong());
                 ui.label(
                     RichText::new(format!("[{}]", badge.0))
                         .color(badge.1)
@@ -1082,7 +1105,7 @@ fn draw_system_unit_card(
 ) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&u.unit).strong().size(13.0));
+            ui.label(RichText::new(&u.unit).strong());
             ui.label(
                 RichText::new(format!("[{badge_label}]"))
                     .color(badge_color)
