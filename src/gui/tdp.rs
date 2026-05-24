@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, RichText};
-use egui_plot::{Bar, BarChart, Legend, Plot};
+use eframe::egui::{self, Color32, RichText, Rounding};
+use egui_plot::{GridMark, HPlacement, Plot, PlotPoint};
 
 use crate::proto::EnergyInfo;
 
@@ -582,32 +582,30 @@ impl TdpState {
         // Bucket samples by hours-ago. Bucket k covers ages
         // [k h, k+1 h), so bar k sits at x = -(k + 0.5).
         const HOURS: usize = 24;
-        let mut sum_pct = [0.0_f64; HOURS];
-        let mut counts = [0_u32; HOURS];
+        const BPH: usize = 4;
+        const BUCKETS: usize = HOURS * BPH;
+        const BUCKET_S: f32 = 3600.0 / BPH as f32;
+
+        let mut sum_pct = [0.0_f64; BUCKETS];
+        let mut counts = [0_u32; BUCKETS];
         for s in &e.samples {
             let Some(p) = s.capacity_pct else { continue };
-            let h_idx = (s.age_s / 3600.0) as i64;
-            if h_idx < 0 || h_idx >= HOURS as i64 {
+            let idx = (s.age_s / BUCKET_S) as i64;
+            if idx < 0 || idx >= BUCKETS as i64 {
                 continue;
             }
-            let h_idx = h_idx as usize;
-            sum_pct[h_idx] += p as f64;
-            counts[h_idx] += 1;
+            let idx = idx as usize;
+            sum_pct[idx] += p as f64;
+            counts[idx] += 1;
         }
 
-        // Linear interpolation across internal gaps (suspend, daemon down).
-        // We only fill *between* two known hours — leading/trailing empty
-        // hours stay empty, since we have no anchor on one side. Filled
-        // bars use the same colour as measured ones; battery change during
-        // a sleep is usually small and a continuous row reads more cleanly
-        // than a perforated one.
-        let mut avg_pct: [Option<f64>; HOURS] = [None; HOURS];
-        for k in 0..HOURS {
+        let mut avg_pct: [Option<f64>; BUCKETS] = [None; BUCKETS];
+        for k in 0..BUCKETS {
             if counts[k] > 0 {
                 avg_pct[k] = Some(sum_pct[k] / counts[k] as f64);
             }
         }
-        let known: Vec<usize> = (0..HOURS).filter(|&k| avg_pct[k].is_some()).collect();
+        let known: Vec<usize> = (0..BUCKETS).filter(|&k| avg_pct[k].is_some()).collect();
         for w in known.windows(2) {
             let (a, b) = (w[0], w[1]);
             if b - a > 1 {
@@ -623,55 +621,139 @@ impl TdpState {
 
         let green = Color32::from_rgb(140, 220, 140);
         let stroke_green = Color32::from_rgb(170, 240, 170);
-        let mut bars: Vec<Bar> = Vec::with_capacity(HOURS);
-        for k in 0..HOURS {
-            let Some(avg) = avg_pct[k] else { continue };
-            let center_x = -((k as f64) + 0.5); // -0.5, -1.5, …
-            bars.push(
-                Bar::new(center_x, avg)
-                    .width(0.9)
-                    .fill(green)
-                    .stroke(egui::Stroke::new(0.5, stroke_green))
-                    .name(format!("{avg:.1}%")),
-            );
-        }
+        let empty = Color32::from_rgb(60, 60, 60);
+        let stroke_empty = Color32::from_rgb(80, 80, 80);
 
-        // Tighten the left edge to the oldest hour that actually has data
-        // (real or interpolated). When the daemon has only been running for
-        // a couple of hours we want a 2-hour-wide chart, not 22 empty slots
-        // to the left.
-        let oldest_filled = (0..HOURS).rev().find(|&k| avg_pct[k].is_some());
-        let x_min = -(oldest_filled.map(|k| k + 1).unwrap_or(HOURS) as f64);
+        let prev_bg = ui.visuals().extreme_bg_color;
+        ui.visuals_mut().extreme_bg_color = Color32::from_rgb(30, 30, 35);
 
-        let chart = BarChart::new(bars).name("battery %");
+        let now_h = {
+            let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+            let t = unsafe { libc::time(std::ptr::null_mut()) };
+            unsafe { libc::localtime_r(&t, &mut tm) };
+            tm.tm_hour as f64 + tm.tm_min as f64 / 60.0
+        };
 
-        Plot::new("battery_level_bars")
+        let plot_response = Plot::new("battery_level_bars")
             .height(180.0)
-            .legend(Legend::default())
-            .y_axis_label("% charge")
-            .x_axis_label("hours ago")
-            .x_axis_formatter(|m, _range| {
-                let h = m.value.round() as i64;
-                if h == 0 { "now".into() } else { format!("-{}h", h.unsigned_abs()) }
+            .show_x(false)
+            .show_y(false)
+            .x_axis_formatter(move |m, _range| {
+                let clock_h = ((now_h + m.value).rem_euclid(24.0)).round() as u32;
+                format!("{clock_h}")
             })
-            .y_axis_formatter(|m, _range| format!("{:.0}%", m.value))
+            .x_grid_spacer(move |input| {
+                let mut marks = Vec::new();
+                for t in (0u32..24).step_by(3) {
+                    let mut x = t as f64 - now_h;
+                    if x > 0.0 { x -= 24.0; }
+                    if x >= input.bounds.0 && x <= input.bounds.1 {
+                        marks.push(GridMark { value: x, step_size: 3.0 });
+                    }
+                }
+                marks
+            })
+            .y_axis_formatter(|m, _range| {
+                let v = m.value.round() as i64;
+                if v == 0 || v == 50 || v == 100 {
+                    format!("{v}%")
+                } else {
+                    String::new()
+                }
+            })
+            .y_axis_position(HPlacement::Right)
+            .y_grid_spacer(|_| {
+                vec![
+                    GridMark { value: 0.0, step_size: 50.0 },
+                    GridMark { value: 25.0, step_size: 25.0 },
+                    GridMark { value: 50.0, step_size: 50.0 },
+                    GridMark { value: 75.0, step_size: 25.0 },
+                    GridMark { value: 100.0, step_size: 50.0 },
+                ]
+            })
             .allow_drag(false)
             .allow_zoom(false)
             .allow_scroll(false)
             .allow_boxed_zoom(false)
             .show_axes([true, true])
-            .include_x(x_min)
+            .include_x(-(HOURS as f64))
             .include_x(0.0)
             .include_y(0.0)
             .include_y(100.0)
-            .show(ui, |plot_ui| {
-                plot_ui.bar_chart(chart);
-            });
+            .show(ui, |_| {});
+
+        ui.visuals_mut().extreme_bg_color = prev_bg;
+
+        let transform = &plot_response.transform;
+        let plot_rect = *transform.frame();
+        let painter = ui.painter().with_clip_rect(plot_rect);
+        let bar_rounding = Rounding { nw: 1.0, ne: 1.0, sw: 0.0, se: 0.0 };
+        let half_w = 0.35 / BPH as f64;
+
+        struct BarInfo {
+            rect: egui::Rect,
+            idx: usize,
+        }
+        let mut bar_infos: Vec<BarInfo> = Vec::with_capacity(BUCKETS);
+
+        for k in 0..BUCKETS {
+            let center_x = -((k as f64 + 0.5) / BPH as f64);
+            let (val, fill, stroke_c) = match avg_pct[k] {
+                Some(avg) => (avg, green, stroke_green),
+                None => (0.5, empty, stroke_empty),
+            };
+            let lo = PlotPoint::new(center_x - half_w, 0.0);
+            let hi = PlotPoint::new(center_x + half_w, val);
+            let screen_rect = transform.rect_from_values(&lo, &hi);
+            painter.add(egui::Shape::Rect(egui::epaint::RectShape::new(
+                screen_rect,
+                bar_rounding,
+                fill,
+                egui::Stroke::new(0.5, stroke_c),
+            )));
+            bar_infos.push(BarInfo { rect: screen_rect, idx: k });
+        }
+
+        if let Some(pointer) = plot_response.response.hover_pos() {
+            if let Some(info) = bar_infos.iter().find(|b| b.rect.contains(pointer)) {
+                let k = info.idx;
+                let center_x = -((k as f64 + 0.5) / BPH as f64);
+                let (val, fill, stroke_c) = match avg_pct[k] {
+                    Some(avg) => (avg, green, stroke_green),
+                    None => (0.5, empty, stroke_empty),
+                };
+                let hi_fill = Color32::from_rgb(
+                    fill.r().saturating_add(30),
+                    fill.g().saturating_add(20),
+                    fill.b().saturating_add(30),
+                );
+                let lo = PlotPoint::new(center_x - half_w, 0.0);
+                let hi = PlotPoint::new(center_x + half_w, val);
+                let screen_rect = transform.rect_from_values(&lo, &hi);
+                painter.add(egui::Shape::Rect(egui::epaint::RectShape::new(
+                    screen_rect,
+                    bar_rounding,
+                    hi_fill,
+                    egui::Stroke::new(1.0, stroke_c),
+                )));
+
+                let label = match avg_pct[k] {
+                    Some(avg) => format!("{avg:.1}%"),
+                    None => "no data".into(),
+                };
+                egui::show_tooltip_at_pointer(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    egui::Id::new("battery_bar_tip"),
+                    |ui| { ui.label(&label); },
+                );
+            }
+        }
 
         ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "Each bar is the average battery % over one hour, last 24 h. \
+                "Each bar is the average battery % over 15 minutes, last 24 h. \
                  History persists across daemon restarts.",
             )
             .weak()
