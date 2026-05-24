@@ -504,9 +504,9 @@ impl TdpState {
                 // single-line. Both timestamps persist across daemon
                 // restarts so the count survives restarts mid-session.
                 let on_label = if e.on_ac {
-                    e.on_ac_since_unix.map(format_elapsed_since_unix).unwrap_or_else(|| "—".into())
+                    format_duration(e.on_ac_active_s)
                 } else {
-                    e.on_battery_since_unix.map(format_elapsed_since_unix).unwrap_or_else(|| "—".into())
+                    format_duration(e.on_battery_active_s)
                 };
                 let on_caption = if e.on_ac { "On AC" } else { "On bat" };
 
@@ -691,24 +691,6 @@ fn format_duration(secs: Option<u32>) -> String {
     }
 }
 
-fn format_elapsed_since_unix(since_unix: u64) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let elapsed = now.saturating_sub(since_unix) as u32;
-    // Sub-minute granularity isn't useful here — the user reads this once
-    // every few minutes at most. Round to nearest minute.
-    let m_total = elapsed / 60;
-    let h = m_total / 60;
-    let m = m_total % 60;
-    if h > 0 {
-        format!("{h}h{m:02}")
-    } else {
-        format!("{m}m")
-    }
-}
 
 /// Compact `label: value` chunk. Both pieces use the default text size
 /// (no `.small()`) so the row reads as a single typographic line;

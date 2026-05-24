@@ -59,12 +59,10 @@ const TIME_WINDOW_TICKS: usize = 60;
 /// workload burst.
 const PKG_EMA_TAU_S: f32 = 10.0;
 
-/// Per-tick dt larger than this is treated as a suspend gap rather than
-/// the laptop being awake. We shift the on-bat/on-ac timestamps forward
-/// by the excess so the displayed elapsed time only reflects awake work.
-/// Normal ticks are ~1 s; the main loop occasionally stalls a bit, so
-/// the cap is loose enough to survive a sluggish tick but tight enough
-/// to exclude a real suspend (always dozens of seconds at minimum).
+/// Per-tick dt larger than this is treated as a suspend gap — the tick
+/// is not counted toward active session time. Normal ticks are ~1 s; the
+/// main loop occasionally stalls a bit, so the cap is loose enough to
+/// survive a sluggish tick but tight enough to exclude a real suspend.
 const SUSPEND_GAP_THRESHOLD_S: f32 = 10.0;
 
 /// Stored form of one history point. We keep wall-clock `at_unix` so the
@@ -88,9 +86,9 @@ struct StoredSample {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct PersistedState {
     #[serde(default)]
-    on_battery_since_unix: Option<u64>,
+    on_battery_active_s: f64,
     #[serde(default)]
-    on_ac_since_unix: Option<u64>,
+    on_ac_active_s: f64,
     #[serde(default)]
     session_discharge_j: f64,
     #[serde(default)]
@@ -154,12 +152,16 @@ pub struct EnergyMeter {
     /// Was the laptop on AC at the previous tick? Used to detect the
     /// AC ↔ battery transitions that drive the symmetric counters.
     prev_on_ac: Option<bool>,
-    /// Unix timestamp of the most recent AC-unplug. None when on AC, or
-    /// when the daemon has never seen an AC transition and no persisted
-    /// state is available.
-    on_battery_since_unix: Option<u64>,
-    /// Unix timestamp of the most recent AC-plug. Mirror of the above.
-    on_ac_since_unix: Option<u64>,
+    /// Accumulated awake seconds on battery in the current session.
+    /// Reset on AC-plug transition. Persisted.
+    on_battery_active_s: f64,
+    /// Accumulated awake seconds on AC in the current session.
+    /// Reset on AC-unplug transition. Persisted.
+    on_ac_active_s: f64,
+    /// Whether we are currently in a battery session.
+    in_battery_session: bool,
+    /// Whether we are currently in an AC session.
+    in_ac_session: bool,
 
     /// Rolling sample timeline. Oldest first; new samples appended to the
     /// back; once the buffer exceeds `MAX_SAMPLES` the oldest entries are
@@ -218,8 +220,10 @@ impl EnergyMeter {
             cached_charge_state: ChargeState::Unknown,
             cached_on_ac: false,
             prev_on_ac: None,
-            on_battery_since_unix: persisted.on_battery_since_unix,
-            on_ac_since_unix: persisted.on_ac_since_unix,
+            on_battery_active_s: persisted.on_battery_active_s,
+            on_ac_active_s: persisted.on_ac_active_s,
+            in_battery_session: persisted.on_battery_active_s > 0.0,
+            in_ac_session: persisted.on_ac_active_s > 0.0,
             samples: persisted.samples,
         }
     }
@@ -239,21 +243,10 @@ impl EnergyMeter {
             .map(|t| now.saturating_duration_since(t).as_secs_f32())
             .unwrap_or(0.0);
 
-        // Suspend handling: if the gap since the previous tick is bigger
-        // than a normal poll interval, the laptop was asleep — push the
-        // on-bat/on-ac anchors forward so `now - since` excludes the
-        // sleep window. Without this the counter reads wall-clock since
-        // unplug, which on a laptop that's spent the night closed is off
-        // by hours.
-        if dt_s > SUSPEND_GAP_THRESHOLD_S {
-            let skip = (dt_s - 1.0) as u64;
-            if let Some(ts) = self.on_battery_since_unix.as_mut() {
-                *ts = ts.saturating_add(skip);
-            }
-            if let Some(ts) = self.on_ac_since_unix.as_mut() {
-                *ts = ts.saturating_add(skip);
-            }
-        }
+        // Suspend handling: ticks exceeding the threshold are treated as
+        // suspend gaps and not counted toward active time. Only normal
+        // awake ticks increment the session counters (done below, after
+        // reading the current AC state).
 
         let pkg_w = sample_rapl_zone(
             self.pkg_path.as_deref(),
@@ -303,6 +296,17 @@ impl EnergyMeter {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Accumulate active time: only count ticks where the machine was
+        // actually awake (dt within the suspend-gap threshold).
+        if dt_s > 0.0 && dt_s <= SUSPEND_GAP_THRESHOLD_S {
+            if self.in_battery_session && !on_ac {
+                self.on_battery_active_s += dt_s as f64;
+            }
+            if self.in_ac_session && on_ac {
+                self.on_ac_active_s += dt_s as f64;
             }
         }
 
@@ -367,41 +371,33 @@ impl EnergyMeter {
             }
         }
 
-        // Detect AC ↔ battery transitions for the symmetric counters and
-        // timestamps. Skip the very first tick (prev_on_ac is None — no
-        // transition to mark). After the first tick:
-        //  - AC → battery: stamp the unplug moment, clear AC-since,
-        //    reset discharge counter to start a fresh discharge cycle.
-        //  - battery → AC: stamp the plug moment, clear battery-since,
-        //    reset charge counter to start a fresh charging cycle.
-        //  - first tick already on AC/battery with no persisted stamp:
-        //    record "now" as a conservative best-effort start.
+        // Detect AC ↔ battery transitions for the symmetric counters.
         let mut transition_happened = false;
         if let Some(prev) = self.prev_on_ac {
             if prev && !on_ac {
-                let ts = now_unix();
-                self.on_battery_since_unix = Some(ts);
-                self.on_ac_since_unix = None;
+                self.on_battery_active_s = 0.0;
+                self.in_battery_session = true;
+                self.in_ac_session = false;
                 self.session_discharge_j = 0.0;
                 transition_happened = true;
             } else if !prev && on_ac {
-                let ts = now_unix();
-                self.on_ac_since_unix = Some(ts);
-                self.on_battery_since_unix = None;
+                self.on_ac_active_s = 0.0;
+                self.in_ac_session = true;
+                self.in_battery_session = false;
                 self.session_charge_j = 0.0;
                 transition_happened = true;
             }
         } else {
-            // First tick of the daemon. Backfill the relevant timestamp
-            // if it's missing — gives the cards something to show before
-            // the user has plugged or unplugged this session.
-            let ts = now_unix();
-            if on_ac && self.on_ac_since_unix.is_none() {
-                self.on_ac_since_unix = Some(ts);
+            // First tick: start session for the current state if not
+            // already active from persisted data.
+            if on_ac && !self.in_ac_session {
+                self.in_ac_session = true;
+                self.on_ac_active_s = 0.0;
                 transition_happened = true;
             }
-            if !on_ac && self.on_battery_since_unix.is_none() {
-                self.on_battery_since_unix = Some(ts);
+            if !on_ac && !self.in_battery_session {
+                self.in_battery_session = true;
+                self.on_battery_active_s = 0.0;
                 transition_happened = true;
             }
         }
@@ -440,8 +436,16 @@ impl EnergyMeter {
             time_remaining_s,
             session_discharge_wh: (self.session_discharge_j / 3600.0) as f32,
             session_charge_wh: (self.session_charge_j / 3600.0) as f32,
-            on_battery_since_unix: self.on_battery_since_unix,
-            on_ac_since_unix: self.on_ac_since_unix,
+            on_battery_active_s: if self.in_battery_session {
+                Some(self.on_battery_active_s as u32)
+            } else {
+                None
+            },
+            on_ac_active_s: if self.in_ac_session {
+                Some(self.on_ac_active_s as u32)
+            } else {
+                None
+            },
             samples,
         }
     }
@@ -521,8 +525,8 @@ impl EnergyMeter {
 
     fn save_state(&self) {
         let state = PersistedState {
-            on_battery_since_unix: self.on_battery_since_unix,
-            on_ac_since_unix: self.on_ac_since_unix,
+            on_battery_active_s: self.on_battery_active_s,
+            on_ac_active_s: self.on_ac_active_s,
             session_discharge_j: self.session_discharge_j,
             session_charge_j: self.session_charge_j,
             samples: self.samples.clone(),
@@ -773,18 +777,12 @@ fn load_persisted() -> PersistedState {
         }
     }
     // Migration path: pre-0.4 stored only on_battery_since_unix in TOML.
-    // Read that one field so a daemon upgrade doesn't reset the counter.
+    // The old timestamp can't be converted to active seconds meaningfully,
+    // so just start fresh.
     if let Some(path) = legacy_runtime_path() {
         if let Ok(text) = fs::read_to_string(&path) {
-            if let Ok(table) = text.parse::<toml::Table>() {
-                let on_battery_since_unix = table
-                    .get("on_battery_since_unix")
-                    .and_then(|v| v.as_integer())
-                    .and_then(|v| if v >= 0 { Some(v as u64) } else { None });
-                return PersistedState {
-                    on_battery_since_unix,
-                    ..Default::default()
-                };
+            if text.parse::<toml::Table>().is_ok() {
+                return PersistedState::default();
             }
         }
     }

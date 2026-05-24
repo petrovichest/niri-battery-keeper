@@ -98,15 +98,14 @@ pub struct EnergyInfo {
     /// is unplugged. Persists across daemon restarts.
     #[serde(default)]
     pub session_charge_wh: f32,
-    /// Unix timestamp of the most recent AC-unplug, persisted across
-    /// daemon restarts. `None` while on AC, or before the daemon has
-    /// ever seen a transition (and no persisted state).
+    /// Active (awake) seconds on battery in the current discharge session.
+    /// `None` while on AC or before any transition has been recorded.
     #[serde(default)]
-    pub on_battery_since_unix: Option<u64>,
-    /// Unix timestamp of the most recent AC-plug. Mirror of
-    /// [`Self::on_battery_since_unix`]: `None` while on battery.
+    pub on_battery_active_s: Option<u32>,
+    /// Active (awake) seconds on AC in the current charge session.
+    /// `None` while on battery.
     #[serde(default)]
-    pub on_ac_since_unix: Option<u64>,
+    pub on_ac_active_s: Option<u32>,
     /// Rolling battery-level samples (oldest first, newest last). Spans
     /// the current battery session including any post-plug recharge,
     /// capped at ~48 h of 10 s buckets. Survives daemon restarts.
