@@ -169,13 +169,11 @@ User's punch list captured 2026-05-21:
 - **TDP UI — drop the sliders.** Replace the slider widgets in the TDP tab
   with numeric input + preset chips (15 W / 25 W / 35 W / Max). Sliders
   encourage twiddling; the real workflow is pick-a-preset.
-- **Battery consumption graph + per-app energy log.** Sample power draw
-  (`/sys/class/power_supply/BAT*/power_now`, or compute from `energy_now`
-  deltas) on a short cadence, render a rolling timeline in the GUI, and
-  attribute drain to apps by proportioning RAPL package-energy across the
-  per-scope `cpu.stat` usage we already read. Persist to
-  `~/.local/share/niri-battery-keeper/history.{db,jsonl}`. Adds a "what's
-  draining my battery" answer the app currently hand-waves.
+- ~~**Battery level chart.**~~ 24 h rolling bar chart with 15-min
+  buckets (96 bars), real clock-time X-axis (3 h grid), Y-axis 0/50/100%
+  on the right with 25%/75% sub-grid, rounded bars, dark-gray background,
+  no crosshair, tooltip near cursor. History persists across daemon
+  restarts.
 - **Per-app / focused-window TDP profile.** When app X is focused, switch
   PL1/PL2 to profile X; when Y is focused, switch to Y. Generalises the
   current global TDP into the same per-app rule shape used by the cgroup
