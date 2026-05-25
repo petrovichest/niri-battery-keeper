@@ -106,6 +106,10 @@ pub struct EnergyInfo {
     /// `None` while on battery.
     #[serde(default)]
     pub on_ac_active_s: Option<u32>,
+    #[serde(default)]
+    pub energy_now_wh: Option<f32>,
+    #[serde(default)]
+    pub energy_full_wh: Option<f32>,
     /// Rolling battery-level samples (oldest first, newest last). Spans
     /// the current battery session including any post-plug recharge,
     /// capped at ~48 h of 10 s buckets. Survives daemon restarts.

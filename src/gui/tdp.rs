@@ -516,21 +516,16 @@ impl TdpState {
                     _ => "Empty in",
                 };
 
-                // Net Wh over this session: positive = net charged,
-                // negative = net discharged. Replaces the old pair of
-                // `Session out` + `Session in`, one of which was always 0.
-                let net_wh = e.session_charge_wh - e.session_discharge_wh;
-                let net_str = if net_wh.abs() < 0.005 {
-                    "0.00 Wh".to_string()
-                } else {
-                    format!("{net_wh:+.2} Wh")
+                let energy_str = match (e.energy_now_wh, e.energy_full_wh) {
+                    (Some(now), Some(full)) => format!("{now:.1}/{full:.1} Wh"),
+                    _ => "—".to_string(),
                 };
 
                 ui.horizontal_wrapped(|ui| {
                     pair(ui, "Charge",     &pct);
                     pair(ui, on_caption,   &on_label);
                     pair(ui, time_caption, &time_label);
-                    pair(ui, "Net",        &net_str);
+                    pair(ui, "Energy",     &energy_str);
                 });
 
                 ui.add_space(4.0);

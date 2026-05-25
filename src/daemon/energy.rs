@@ -163,6 +163,10 @@ pub struct EnergyMeter {
     /// Whether we are currently in an AC session.
     in_ac_session: bool,
 
+    /// Full-charge energy in Wh, read once at startup. Stable across the
+    /// battery's life (only changes on recalibration).
+    energy_full_wh: Option<f32>,
+
     /// Rolling sample timeline. Oldest first; new samples appended to the
     /// back; once the buffer exceeds `MAX_SAMPLES` the oldest entries are
     /// dropped from the front.
@@ -191,6 +195,8 @@ impl EnergyMeter {
         if bat_path.is_none() {
             log::info!("no battery found under /sys/class/power_supply/ — battery_w will be unavailable");
         }
+
+        let energy_full_wh = bat_path.as_deref().and_then(read_energy_full_wh);
 
         let persisted = load_persisted();
 
@@ -224,6 +230,7 @@ impl EnergyMeter {
             on_ac_active_s: persisted.on_ac_active_s,
             in_battery_session: persisted.on_battery_active_s > 0.0,
             in_ac_session: persisted.on_ac_active_s > 0.0,
+            energy_full_wh,
             samples: persisted.samples,
         }
     }
@@ -425,6 +432,8 @@ impl EnergyMeter {
         let psys_now = self.last_psys_w;
 
         let time_remaining_s = self.estimate_time_remaining_s();
+        let energy_now_wh = self.read_energy_now_wh();
+        let energy_full_wh = self.energy_full_wh;
 
         EnergyInfo {
             battery_w: battery_now,
@@ -446,6 +455,8 @@ impl EnergyMeter {
             } else {
                 None
             },
+            energy_now_wh,
+            energy_full_wh,
             samples,
         }
     }
@@ -521,6 +532,20 @@ impl EnergyMeter {
             }
             _ => None,
         }
+    }
+
+    fn read_energy_now_wh(&self) -> Option<f32> {
+        let bat = self.bat_path.as_ref()?;
+        if let (Some(now), Some(v_uv)) = (
+            read_u64(&bat.join("charge_now")),
+            read_u64(&bat.join("voltage_now")),
+        ) {
+            let v = v_uv as f64 / 1e6;
+            if v > 0.0 {
+                return Some((now as f64 * v / 1e6) as f32);
+            }
+        }
+        read_u64(&bat.join("energy_now")).map(|n| n as f32 / 1e6)
     }
 
     fn save_state(&self) {
@@ -635,6 +660,19 @@ fn read_capacity_pct(bat: Option<&Path>) -> Option<f32> {
         }
     }
     read_u64(&bat.join("capacity")).map(|v| v as f32)
+}
+
+fn read_energy_full_wh(bat: &Path) -> Option<f32> {
+    if let (Some(full), Some(v_uv)) = (
+        read_u64(&bat.join("charge_full")),
+        read_u64(&bat.join("voltage_now")),
+    ) {
+        let v = v_uv as f64 / 1e6;
+        if v > 0.0 && full > 0 {
+            return Some((full as f64 * v / 1e6) as f32);
+        }
+    }
+    read_u64(&bat.join("energy_full")).map(|n| n as f32 / 1e6)
 }
 
 fn discover_battery() -> Option<PathBuf> {
