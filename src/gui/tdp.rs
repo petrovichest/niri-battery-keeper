@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText, Rounding};
 use egui_plot::{GridMark, HPlacement, Plot, PlotPoint};
 
+use super::palette::{self, *};
 use crate::proto::EnergyInfo;
 
 const RAPL_BASE: &str = "/sys/class/powercap/intel-rapl:0";
@@ -151,7 +152,7 @@ impl TdpState {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, energy: Option<&EnergyInfo>) {
-        ui.add_space(8.0);
+        ui.add_space(SP_M);
 
         // Polkit agent banner — only when missing. Shown above everything else
         // because without an agent, neither install nor Apply can show a
@@ -159,7 +160,7 @@ impl TdpState {
         // agent").
         if !self.polkit_agent_running {
             self.draw_polkit_agent_banner(ui);
-            ui.add_space(8.0);
+            ui.add_space(SP_M);
         }
 
         // Energy section first — comparative-test workflow is "watch the
@@ -169,7 +170,7 @@ impl TdpState {
         // TDP helper isn't installed yet.
         if let Some(e) = energy {
             self.draw_energy_section(ui, e);
-            ui.add_space(12.0);
+            ui.add_space(SP_L);
         }
 
         if !self.helper_available {
@@ -180,10 +181,7 @@ impl TdpState {
 
 
         // ─── Live readouts ───────────────────────────────────────────────
-        egui::Frame::default()
-            .fill(Color32::from_rgb(30, 35, 45))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-            .show(ui, |ui| {
+        palette::info_card().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     cell(ui, "Pkg temp", self.snapshot.temp_c.map(|t| format!("{t:.0} °C")));
                     ui.add_space(24.0);
@@ -202,13 +200,13 @@ impl TdpState {
                 });
             });
 
-        ui.add_space(14.0);
+        ui.add_space(SP_L);
         ui.label(RichText::new("Power limits").strong());
-        ui.add_space(4.0);
+        ui.add_space(SP_S);
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Sustained (PL1)").monospace());
-            ui.add_space(8.0);
+            ui.add_space(SP_M);
             ui.add(
                 egui::Slider::new(&mut self.pl1_draft_w, PL1_MIN_W..=PL1_MAX_W)
                     .suffix(" W")
@@ -217,7 +215,7 @@ impl TdpState {
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("Burst (PL2)    ").monospace());
-            ui.add_space(8.0);
+            ui.add_space(SP_M);
             ui.add(
                 egui::Slider::new(&mut self.pl2_draft_w, PL2_MIN_W..=PL2_MAX_W)
                     .suffix(" W")
@@ -231,16 +229,14 @@ impl TdpState {
             self.pl2_draft_w = self.pl1_draft_w;
         }
 
-        ui.add_space(10.0);
+        ui.add_space(SP_M);
 
         let in_flight = self.apply.is_some();
         let dirty = self.is_dirty();
         ui.horizontal(|ui| {
-            let btn = egui::Button::new(if in_flight {
-                "Applying…"
-            } else {
-                "Apply"
-            });
+            let label = if in_flight { "Applying\u{2026}" } else { "Apply" };
+            let btn = egui::Button::new(RichText::new(label).color(Color32::WHITE))
+                .fill(if dirty && !in_flight { PRIMARY } else { Color32::DARK_GRAY });
             if ui
                 .add_enabled(!in_flight && dirty, btn)
                 .on_hover_text(
@@ -267,18 +263,18 @@ impl TdpState {
         });
 
         if let Some(result) = &self.last_apply {
-            ui.add_space(6.0);
+            ui.add_space(SP_M);
             match result {
                 Ok(msg) => {
-                    ui.label(RichText::new(msg).color(Color32::from_rgb(140, 220, 140)).small());
+                    ui.label(RichText::new(msg).color(SUCCESS).small());
                 }
                 Err(msg) => {
-                    ui.label(RichText::new(msg).color(Color32::from_rgb(240, 140, 140)).small());
+                    ui.label(RichText::new(msg).color(ERROR_LIGHT).small());
                 }
             }
         }
 
-        ui.add_space(14.0);
+        ui.add_space(SP_L);
         ui.label(
             RichText::new(
                 "TDP limits reset to OEM defaults on reboot — re-apply your preferred \
@@ -318,16 +314,13 @@ impl TdpState {
 
 impl TdpState {
     fn draw_install_card(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::default()
-            .fill(Color32::from_rgb(35, 50, 70))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-            .show(ui, |ui| {
+        palette::info_card().show(ui, |ui| {
                 ui.label(
                     RichText::new("Set up TDP control")
                         .strong()
-                        .color(Color32::from_rgb(180, 210, 255)),
+                        .color(INFO_ACCENT),
                 );
-                ui.add_space(4.0);
+                ui.add_space(SP_S);
                 ui.label(
                     RichText::new(
                         "TDP control needs a small root-owned helper plus a polkit \
@@ -336,7 +329,7 @@ impl TdpState {
                     )
                     .small(),
                 );
-                ui.add_space(2.0);
+                ui.add_space(SP_S);
                 ui.label(
                     RichText::new(format!(
                         "  • copy this binary → {HELPER_PATH}  (root-owned, multi-call)\n  \
@@ -347,15 +340,13 @@ impl TdpState {
                     .small()
                     .weak(),
                 );
-                ui.add_space(8.0);
+                ui.add_space(SP_M);
 
                 let busy = self.install_busy;
                 let agent_ok = self.polkit_agent_running;
-                let btn = egui::Button::new(if busy {
-                    "Installing…"
-                } else {
-                    "Install TDP helper"
-                });
+                let label = if busy { "Installing\u{2026}" } else { "Install TDP helper" };
+                let btn = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
+                    .fill(PRIMARY);
                 if ui
                     .add_enabled(!busy && agent_ok, btn)
                     .on_hover_text(if agent_ok {
@@ -370,21 +361,13 @@ impl TdpState {
                 }
 
                 if let Some(result) = &self.install_status {
-                    ui.add_space(6.0);
+                    ui.add_space(SP_M);
                     match result {
                         Ok(msg) => {
-                            ui.label(
-                                RichText::new(msg)
-                                    .color(Color32::from_rgb(140, 220, 140))
-                                    .small(),
-                            );
+                            ui.label(RichText::new(msg).color(SUCCESS).small());
                         }
                         Err(msg) => {
-                            ui.label(
-                                RichText::new(msg)
-                                    .color(Color32::from_rgb(240, 140, 140))
-                                    .small(),
-                            );
+                            ui.label(RichText::new(msg).color(ERROR_LIGHT).small());
                         }
                     }
                 }
@@ -392,14 +375,11 @@ impl TdpState {
     }
 
     fn draw_polkit_agent_banner(&self, ui: &mut egui::Ui) {
-        egui::Frame::default()
-            .fill(Color32::from_rgb(70, 50, 30))
-            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-            .show(ui, |ui| {
+        palette::warning_card().show(ui, |ui| {
                 ui.label(
                     RichText::new("No polkit authentication agent detected")
                         .strong()
-                        .color(Color32::from_rgb(255, 210, 160)),
+                        .color(WARN_ACCENT),
                 );
                 ui.label(
                     RichText::new(
@@ -409,7 +389,7 @@ impl TdpState {
                     )
                     .small(),
                 );
-                ui.add_space(2.0);
+                ui.add_space(SP_S);
                 ui.label(
                     RichText::new(
                         "  paru -S hyprpolkitagent\n  \
@@ -490,10 +470,7 @@ impl TdpState {
         // whole row wraps naturally on a narrow window. The previous
         // vertical-cell layout had ~580 px of fixed gaps and clipped off
         // the right edge of the smaller GUI viewport.
-        egui::Frame::default()
-            .fill(Color32::from_rgb(28, 32, 40))
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-            .show(ui, |ui| {
+        palette::info_card().show(ui, |ui| {
                 let pct = e
                     .capacity_pct
                     .map(|p| format!("{p}%"))
@@ -528,7 +505,7 @@ impl TdpState {
                     pair(ui, "Energy",     &energy_str);
                 });
 
-                ui.add_space(4.0);
+                ui.add_space(SP_S);
 
                 // Live wattage breakdown — disjoint slices that sum to
                 // Battery: CPU is RAPL package, GpuSoc is psys − package

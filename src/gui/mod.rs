@@ -1,5 +1,62 @@
 mod tdp;
 
+pub(super) mod palette {
+    use eframe::egui::{self, Color32, Rounding};
+
+    pub const SP_S: f32 = 4.0;
+    pub const SP_M: f32 = 8.0;
+    pub const SP_L: f32 = 16.0;
+
+    pub const CARD_ROUNDING: Rounding = Rounding::same(4.0);
+
+    pub const SUCCESS:      Color32 = Color32::from_rgb(140, 220, 140);
+    pub const SUCCESS_DIM:  Color32 = Color32::from_rgb(120, 200, 120);
+
+    pub const ERROR:        Color32 = Color32::from_rgb(220, 80, 80);
+    pub const ERROR_LIGHT:  Color32 = Color32::from_rgb(240, 140, 140);
+    pub const DANGER_FILL:  Color32 = Color32::from_rgb(180, 60, 60);
+    pub const DANGER_BG:    Color32 = Color32::from_rgb(110, 50, 50);
+    pub const DANGER_TEXT:  Color32 = Color32::from_rgb(255, 200, 200);
+
+    pub const PRIMARY:      Color32 = Color32::from_rgb(60, 120, 200);
+    pub const INFO_ACCENT:  Color32 = Color32::from_rgb(180, 210, 255);
+    pub const INFO_TEXT:    Color32 = Color32::from_rgb(200, 210, 225);
+    pub const INFO_BADGE:   Color32 = Color32::from_rgb(120, 160, 220);
+    pub const FROZEN_BADGE: Color32 = Color32::from_rgb(100, 180, 220);
+
+    pub const WARN:         Color32 = Color32::from_rgb(220, 160, 70);
+    pub const WARN_ACCENT:  Color32 = Color32::from_rgb(255, 210, 160);
+
+    pub const MUTED:        Color32 = Color32::from_rgb(150, 150, 150);
+    pub const SOFT_WHITE:   Color32 = Color32::from_rgb(220, 220, 220);
+
+    pub const CARD_INFO_BG:       Color32 = Color32::from_rgb(30, 35, 45);
+    pub const CARD_WARNING_BG:    Color32 = Color32::from_rgb(70, 50, 30);
+    pub const KILLSWITCH_OFF_BG:  Color32 = Color32::from_rgb(50, 70, 50);
+
+    pub fn info_card() -> egui::Frame {
+        egui::Frame::default()
+            .fill(CARD_INFO_BG)
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+            .rounding(CARD_ROUNDING)
+    }
+
+    pub fn warning_card() -> egui::Frame {
+        egui::Frame::default()
+            .fill(CARD_WARNING_BG)
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+            .rounding(CARD_ROUNDING)
+    }
+
+    pub fn banner_frame() -> egui::Frame {
+        egui::Frame::default()
+            .fill(CARD_INFO_BG)
+            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .rounding(CARD_ROUNDING)
+    }
+}
+use palette::*;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -464,7 +521,7 @@ impl eframe::App for App {
         let dirty = self.is_dirty();
 
         egui::TopBottomPanel::top("mode_bar").show(ctx, |ui| {
-            ui.add_space(6.0);
+            ui.add_space(SP_M);
 
             // Kill switch — committed immediately, not via the Apply button,
             // because the whole point is "I want it off right now".
@@ -473,10 +530,10 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 let (label, fill, fg) = if disabled_now {
                     ("● Kill switch: ON  (click to re-enable)",
-                     Color32::from_rgb(180, 60, 60), Color32::WHITE)
+                     DANGER_FILL, Color32::WHITE)
                 } else {
                     ("○ Kill switch: off  (click to disable everything)",
-                     Color32::from_rgb(50, 70, 50), Color32::from_rgb(220, 220, 220))
+                     KILLSWITCH_OFF_BG, SOFT_WHITE)
                 };
                 let btn = egui::Button::new(RichText::new(label).color(fg).strong())
                     .fill(fill)
@@ -501,7 +558,7 @@ impl eframe::App for App {
                     }
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(SP_M);
 
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Mode:").strong());
@@ -523,9 +580,9 @@ impl eframe::App for App {
                     }
                 }
             });
-            ui.add_space(4.0);
+            ui.add_space(SP_S);
             ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(SP_S);
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.view == View::Apps, RichText::new("Apps")).clicked() {
                     self.view = View::Apps;
@@ -537,23 +594,23 @@ impl eframe::App for App {
                     self.view = View::Tdp;
                 }
             });
-            ui.add_space(4.0);
+            ui.add_space(SP_S);
         });
 
         self.draw_install_banner(ctx);
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(SP_S);
             ui.horizontal(|ui| {
                 let (status_text, color) = match (&self.error, &self.server) {
-                    (Some(e), _) => (e.clone(), Color32::from_rgb(220, 80, 80)),
+                    (Some(e), _) => (e.clone(), ERROR),
                     (None, Some(s)) if s.config.disabled => (
                         format!("daemon: ● running   kill switch: ON   throttled: {}", s.throttled_units.len()),
-                        Color32::from_rgb(220, 160, 70),
+                        WARN,
                     ),
                     (None, Some(s)) => (
                         format!("daemon: ● running   throttled: {}", s.throttled_units.len()),
-                        Color32::from_rgb(120, 200, 120),
+                        SUCCESS_DIM,
                     ),
                     (None, None) => ("daemon: ○ connecting…".to_string(), Color32::GRAY),
                 };
@@ -561,7 +618,7 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let apply_btn = egui::Button::new(
                         RichText::new("Apply").color(Color32::WHITE),
-                    ).fill(if dirty { Color32::from_rgb(60, 120, 200) } else { Color32::DARK_GRAY });
+                    ).fill(if dirty { PRIMARY } else { Color32::DARK_GRAY });
                     if ui.add_enabled(dirty, apply_btn).clicked() {
                         self.apply();
                     }
@@ -579,9 +636,9 @@ impl eframe::App for App {
                     ) && crate::bootstrap::is_installed()
                     {
                         let remove_btn = egui::Button::new(
-                            RichText::new("Remove service…").color(Color32::from_rgb(255, 200, 200)),
+                            RichText::new("Remove service…").color(DANGER_TEXT),
                         )
-                        .fill(Color32::from_rgb(110, 50, 50));
+                        .fill(DANGER_BG);
                         if ui
                             .add(remove_btn)
                             .on_hover_text(
@@ -606,7 +663,7 @@ impl eframe::App for App {
                     }
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(SP_S);
         });
 
         let collapsed_before = (
@@ -703,11 +760,7 @@ impl App {
             return;
         }
         egui::TopBottomPanel::top("install_banner")
-            .frame(
-                egui::Frame::default()
-                    .fill(Color32::from_rgb(35, 50, 70))
-                    .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
-            )
+            .frame(banner_frame())
             .show(ctx, |ui| match banner {
                 Banner::Install => self.draw_install_banner_install(ui),
                 Banner::EnableAutostart => self.draw_install_banner_enable(ui),
@@ -726,15 +779,15 @@ impl App {
                 "Until you install it, the daemon won't start on login and \
                  this window can't talk to it.",
             )
-            .color(Color32::from_rgb(200, 210, 225))
+            .color(INFO_TEXT)
             .small(),
         );
-        ui.add_space(4.0);
+        ui.add_space(SP_S);
         ui.horizontal(|ui| {
             let btn = egui::Button::new(
                 RichText::new("Install service").color(Color32::WHITE).strong(),
             )
-            .fill(Color32::from_rgb(60, 120, 200));
+            .fill(PRIMARY);
             if ui
                 .add(btn)
                 .on_hover_text(
@@ -761,15 +814,15 @@ impl App {
                 "The package shipped a systemd user unit, but autostart \
                  isn't on. Enable it so the daemon comes up on login.",
             )
-            .color(Color32::from_rgb(200, 210, 225))
+            .color(INFO_TEXT)
             .small(),
         );
-        ui.add_space(4.0);
+        ui.add_space(SP_S);
         ui.horizontal(|ui| {
             let btn = egui::Button::new(
                 RichText::new("Enable autostart").color(Color32::WHITE).strong(),
             )
-            .fill(Color32::from_rgb(60, 120, 200));
+            .fill(PRIMARY);
             if ui
                 .add(btn)
                 .on_hover_text(
@@ -786,12 +839,9 @@ impl App {
 
     fn draw_install_status_inline(&self, ui: &mut egui::Ui) {
         if let Some(Err(msg)) = &self.install_status {
-            ui.colored_label(
-                Color32::from_rgb(255, 140, 140),
-                format!("failed: {msg}"),
-            );
+            ui.colored_label(ERROR_LIGHT, format!("failed: {msg}"));
         } else if let Some(Ok(msg)) = &self.install_status {
-            ui.colored_label(Color32::from_rgb(160, 230, 160), msg);
+            ui.colored_label(SUCCESS, msg);
         }
     }
 
@@ -807,7 +857,7 @@ impl App {
             .default_pos(screen.center())
             .show(ctx, |ui| {
                 ui.label("This will:");
-                ui.add_space(2.0);
+                ui.add_space(SP_S);
                 ui.label(
                     RichText::new("  • stop the running daemon (systemctl --user disable --now)")
                         .small(),
@@ -817,7 +867,7 @@ impl App {
                         .monospace()
                         .small(),
                 );
-                ui.add_space(6.0);
+                ui.add_space(SP_M);
                 ui.label(
                     RichText::new(
                         "The binary stays in ~/.local/bin/ — re-enable any time via the \
@@ -828,7 +878,7 @@ impl App {
                     .weak()
                     .small(),
                 );
-                ui.add_space(8.0);
+                ui.add_space(SP_M);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         self.show_remove_service_confirm = false;
@@ -837,7 +887,7 @@ impl App {
                         let confirm = egui::Button::new(
                             RichText::new("Remove service").color(Color32::WHITE).strong(),
                         )
-                        .fill(Color32::from_rgb(180, 60, 60));
+                        .fill(DANGER_FILL);
                         if ui.add(confirm).clicked() {
                             self.show_remove_service_confirm = false;
                             self.remove_service();
@@ -873,11 +923,11 @@ fn draw_app_list(
     for app in apps_clone {
         let app_id = app.app_id.clone();
         let badge = if app.focused {
-            ("active", Color32::from_rgb(120, 200, 120))
+            ("active", SUCCESS_DIM)
         } else if app.excluded {
-            ("excluded", Color32::from_rgb(150, 150, 150))
+            ("excluded", MUTED)
         } else if app.any_throttled {
-            ("managed", Color32::from_rgb(220, 160, 70))
+            ("managed", WARN)
         } else {
             ("waiting", Color32::GRAY)
         };
@@ -895,7 +945,7 @@ fn draw_app_list(
                 if any_shared {
                     ui.label(
                         RichText::new("[shared]")
-                            .color(Color32::from_rgb(220, 160, 70))
+                            .color(WARN)
                             .small(),
                     )
                     .on_hover_text(
@@ -976,7 +1026,7 @@ fn draw_app_list(
                             );
                         }
                     }
-                    ui.add_space(2.0);
+                    ui.add_space(SP_S);
                     ui.label(RichText::new("Managed scopes:").weak().small());
                     if app.scopes.is_empty() {
                         ui.label(RichText::new("  (none discovered)").weak().small());
@@ -984,9 +1034,9 @@ fn draw_app_list(
                         for s in &app.scopes {
                             let state_text = if s.throttled { "▰" } else { "▱" };
                             let color = if s.throttled {
-                                Color32::from_rgb(220, 160, 70)
+                                WARN
                             } else {
-                                Color32::from_rgb(120, 200, 120)
+                                SUCCESS_DIM
                             };
                             ui.horizontal(|ui| {
                                 ui.colored_label(color, state_text);
@@ -1015,7 +1065,7 @@ fn draw_app_list(
                     }
                 });
         });
-        ui.add_space(4.0);
+        ui.add_space(SP_S);
     }
 
     draw_system_sections(ui, &draft.system_units, collapsed_orphans, collapsed_protected);
@@ -1042,7 +1092,7 @@ fn draw_system_sections(
     }
 
     if !orphans.is_empty() {
-        ui.add_space(6.0);
+        ui.add_space(SP_M);
         ui.separator();
         collapsible_section_header(
             ui,
@@ -1051,13 +1101,13 @@ fn draw_system_sections(
         );
         if !*collapsed_orphans {
             for u in orphans {
-                draw_system_unit_card(ui, u, "orphan", Color32::from_rgb(150, 150, 150));
+                draw_system_unit_card(ui, u, "orphan", MUTED);
             }
         }
     }
 
     if !protected.is_empty() {
-        ui.add_space(6.0);
+        ui.add_space(SP_M);
         ui.separator();
         collapsible_section_header(
             ui,
@@ -1070,7 +1120,7 @@ fn draw_system_sections(
                     SystemUnitCategory::Protected { reason } => format!("protected: {reason}"),
                     _ => "protected".to_string(),
                 };
-                draw_system_unit_card(ui, u, &label, Color32::from_rgb(120, 160, 220));
+                draw_system_unit_card(ui, u, &label, INFO_BADGE);
             }
         }
     }
@@ -1114,7 +1164,7 @@ fn draw_system_unit_card(
             if u.limits.frozen {
                 ui.label(
                     RichText::new("[frozen]")
-                        .color(Color32::from_rgb(100, 180, 220))
+                        .color(FROZEN_BADGE)
                         .small(),
                 );
             }
@@ -1136,7 +1186,7 @@ fn draw_system_unit_card(
                         .weak()
                         .small(),
                 );
-                ui.add_space(2.0);
+                ui.add_space(SP_S);
                 ui.label(RichText::new("Processes:").weak().small());
                 if u.processes.is_empty() {
                     ui.label(RichText::new("  (none)").weak().small());
@@ -1166,7 +1216,7 @@ fn draw_system_unit_card(
                 }
             });
     });
-    ui.add_space(4.0);
+    ui.add_space(SP_S);
 }
 
 fn format_limits(l: &CgroupLimits) -> String {
@@ -1193,7 +1243,7 @@ fn draw_preset_editor(
     mode: &mut PresetEditMode,
     name_drafts: &mut BTreeMap<String, String>,
 ) {
-    ui.add_space(4.0);
+    ui.add_space(SP_S);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Edit mode:").strong());
         if ui.selectable_label(*mode == PresetEditMode::Simple, "Simple").clicked() {
@@ -1203,7 +1253,7 @@ fn draw_preset_editor(
             *mode = PresetEditMode::Advanced;
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(SP_S);
 
     match mode {
         PresetEditMode::Simple => {
@@ -1213,7 +1263,7 @@ fn draw_preset_editor(
             ui.label(RichText::new("Each preset throttles unfocused apps with three independent knobs: CPU quota (% of one core), CPU scheduling weight, and IO scheduling weight.").weak().small());
         }
     }
-    ui.add_space(8.0);
+    ui.add_space(SP_M);
 
     let is_simple = *mode == PresetEditMode::Simple;
     // Pin-CPUs column is only meaningful on hybrid CPUs (Intel P/E split).
@@ -1360,7 +1410,7 @@ fn draw_preset_editor(
             name_drafts.retain(|k, _| config.modes.contains_key(k));
         });
 
-    ui.add_space(8.0);
+    ui.add_space(SP_M);
     if ui.button("+ Add preset").clicked() {
         let base = Profile::Throttle {
             cpu_quota: CpuQuota("50%".into()),
